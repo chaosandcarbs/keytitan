@@ -39,6 +39,7 @@ migrate_working_dir/
 .flutter-plugins-dependencies
 .pub-cache/
 .pub/
+/.idea/
 /build/
 /bin/cache/
 /bin/internal/bootstrap.bat
@@ -141,6 +142,9 @@ local.properties
 **/linux/flutter/generated_plugin_registrant.cc
 **/linux/flutter/generated_plugin_registrant.h
 **/linux/flutter/generated_plugins.cmake
+
+# test
+/test/
 
 # Coverage
 coverage/

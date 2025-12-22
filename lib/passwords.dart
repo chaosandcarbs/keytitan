@@ -230,8 +230,11 @@ class passFile {
 
   Future<void> updatePassword(keyTitanPass password) async {
     int catID = await getCategoryID(password.category);
-    final db = await _initKeyTitanDB();
+    if (catID == -1) {
+      catID = await insertCategory(password.category);
+    }
     
+    final db = await _initKeyTitanDB();
     await db.transaction((txn) async {
       int count = await txn.rawUpdate(
         'UPDATE password SET title = ?, site = ?, category_id = ?, username = ?, password = ? WHERE id = ?',

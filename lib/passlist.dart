@@ -56,8 +56,10 @@ class _keyTitanListState extends State<keyTitanList> {
       )
     );
 
-    _refreshKey = UniqueKey();
-    //pop the dialog box
+    setState(() {
+      _refreshKey = UniqueKey();
+    });
+    // pop the dialog box
     Navigator.of(context, rootNavigator: true).pop();
   }
 
@@ -74,8 +76,10 @@ class _keyTitanListState extends State<keyTitanList> {
       )
     );
 
-    _refreshKey = UniqueKey();
-    //pop the dialog box
+    setState(() {
+      _refreshKey = UniqueKey();
+    });
+    // pop the dialog box
     Navigator.of(context, rootNavigator: true).pop();
     //pop the (unrefreshed) screen
     //Navigator.of(context, rootNavigator: true).pop();
@@ -103,7 +107,9 @@ class _keyTitanListState extends State<keyTitanList> {
 
   void deletePassword(int id) async {
     await pFile.deletePassword(id);
-    _refreshKey = UniqueKey();
+    setState(() {
+      _refreshKey = UniqueKey();
+    });
     Navigator.of(context, rootNavigator: true).pop();
   }
 
@@ -152,17 +158,23 @@ class _keyTitanListState extends State<keyTitanList> {
     //cleanup 
     Clipboard.setData(ClipboardData(text: ''));
     this.pFile.closeFiles();
+    setState(() {
+      pFile.fileName = '';
+      pFile.password = '';
+      _refreshKey = UniqueKey();
+    });
 
-    pFile.fileName = '';
-    pFile.password = '';
-    _refreshKey = UniqueKey();
-        
-    //pop pass list
+    // pop pass list
     Navigator.of(context, rootNavigator: true).pop();
   }
 
   void passwordDialog({bool edit = false}) async {
-    headCon.text = 'Enter New Password Info';
+    if (edit) {
+      headCon.text = 'Edit Password Info';
+    }
+    else {
+      headCon.text = 'Enter New Password Info';
+    }
     String btnText;
     final _formKey = GlobalKey<FormState>();
     List<DropdownMenuEntry> passwordComplexity = [
@@ -305,7 +317,6 @@ class _keyTitanListState extends State<keyTitanList> {
                           else{
                             createPassword(); 
                           }
-                          _refreshKey = UniqueKey();
                           }
                         }, 
                         child: Text(btnText)
@@ -336,7 +347,7 @@ class _keyTitanListState extends State<keyTitanList> {
       padding: EdgeInsets.all(10),
       child: Row(
         children: [
-          Expanded(flex: 5, child: FloatingActionButton.extended(
+          Expanded(flex: 6, child: FloatingActionButton.extended(
             heroTag: 'newPassBtn',
             onPressed: passwordDialog,
             label: const Text('New Password'),
@@ -345,11 +356,11 @@ class _keyTitanListState extends State<keyTitanList> {
             foregroundColor: Constants.lightText,
             extendedPadding: EdgeInsets.symmetric(
               vertical: 10,
-              horizontal: 40,
+              horizontal: 25,
             ),
           )),
           Spacer(flex: 1,),
-          Expanded(flex: 5, child: FloatingActionButton.extended(
+          Expanded(flex: 6, child: FloatingActionButton.extended(
             heroTag: 'saveCloseBtn',
             onPressed: saveAndClose,
             label: const Text('Save & Close'),
@@ -358,11 +369,11 @@ class _keyTitanListState extends State<keyTitanList> {
             foregroundColor: Constants.lightText,
             extendedPadding: EdgeInsets.symmetric(
               vertical: 10,
-              horizontal: 30,
+              horizontal: 25,
             ),
           )),
           Spacer(flex: 1,),
-          Expanded(flex: 5, child: FloatingActionButton.extended(
+          Expanded(flex: 4, child: FloatingActionButton.extended(
             heroTag: 'closeBtn',
             onPressed: closeOnly,
             label: const Text('Close'),
@@ -371,7 +382,7 @@ class _keyTitanListState extends State<keyTitanList> {
             foregroundColor: Constants.lightText,
             extendedPadding: EdgeInsets.symmetric(
               vertical: 10,
-              horizontal: 30,
+              horizontal: 25,
             ),
           )),
         ],

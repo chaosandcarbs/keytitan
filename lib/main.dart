@@ -1,12 +1,11 @@
-// ignore_for_file: camel_case_types
-
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:window_size/window_size.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-// ignore: unnecessary_import
 import 'package:sqflite/sqflite.dart';
+
+// Local imports
 import 'new.dart';
 import 'open.dart';
 import 'drivesync.dart';
@@ -14,44 +13,48 @@ import 'passlist.dart';
 import 'globals.dart';
 
 void main() {
+  // Handle Desktop specific initializations
   if (Platform.isWindows || Platform.isLinux) {
-    WidgetsFlutterBinding.ensureInitialized();
-
-    //init sqflite
-    sqfliteFfiInit();
-
-    // Set Window Size
-    setWindowMaxSize(const Size(576, 1024));
-    setWindowMinSize(const Size(393, 873));
-    Future<Null>.delayed(Duration(milliseconds: 500), () {
-      setWindowFrame(
-        Rect.fromCenter(center: Offset(1000, 500), width: 512, height: 910),
-      );
-    });
-
-    Constants.titleTextSize = 34;
-    Constants.menuTextSize = 28;
+    _initializeDesktopEnvironment();
+    databaseFactory = databaseFactoryFfi;
   }
-  databaseFactory = databaseFactoryFfi;
-  runApp(KeyTitanApp());
+
+  runApp(const KeyTitanApp());
+}
+
+/// Sets up window constraints and database drivers for Desktop platforms
+void _initializeDesktopEnvironment() {
+  WidgetsFlutterBinding.ensureInitialized();
+  sqfliteFfiInit();
+
+  setWindowMaxSize(const Size(824, 1524));
+  setWindowMinSize(const Size(393, 873));
+  
+  // Center the window on the screen after a brief delay to ensure engine readiness
+  Future.delayed(const Duration(milliseconds: 500), () {
+    setWindowFrame(
+      Rect.fromCenter(center: const Offset(1000, 500), width: 512, height: 910),
+    );
+  });
+
+  // Scale UI constants for desktop readability
+  Constants.titleTextSize = 26;
+  Constants.menuTextSize = 16;
 }
 
 class KeyTitanApp extends StatelessWidget {
-  KeyTitanApp({super.key});
-  final _mainNavigatorKey = GlobalKey<NavigatorState>();
+  const KeyTitanApp({super.key});
 
-  // This widget is the root of your application.
+  // Global key for navigation without BuildContext if needed
+  static final _mainNavigatorKey = GlobalKey<NavigatorState>();
+
   @override
   Widget build(BuildContext context) {
-    if (Platform.isWindows || Platform.isLinux) {
-      Constants.cardHeight = MediaQuery.of(context).size.height * 0.16;
-      Constants.cardSepHeight = MediaQuery.of(context).size.height * 0.075;
-    } else {
-      Constants.cardHeight = MediaQuery.of(context).size.height * 0.12;
-    }
     return MaterialApp(
       title: 'KeyTitan Password Manager',
+      navigatorKey: _mainNavigatorKey,
       theme: ThemeData(
+        useMaterial3: true,
         primarySwatch: Colors.blueGrey,
         appBarTheme: AppBarTheme(
           backgroundColor: Constants.appBarColor,
@@ -59,199 +62,177 @@ class KeyTitanApp extends StatelessWidget {
         ),
         colorScheme: Constants.colorScheme,
       ),
-      
-      navigatorKey: _mainNavigatorKey,
+      // Defined named routes for cleaner navigation management
       routes: {
-        KeyTitan.home:
-            (context) => keyTitanHome(
+        KeyTitan.home: (context) => KeyTitanHome(
               title: 'KeyTitan Password Manager',
               navigatorKey: _mainNavigatorKey,
             ),
-        KeyTitan.newFile:
-            (context) => keyTitanNew(
+        KeyTitan.newFile: (context) => KeyTitanNew(
               title: 'New Password File',
               navigatorKey: _mainNavigatorKey,
             ),
-        KeyTitan.openFile:
-            (context) => keyTitanOpen(
+        KeyTitan.openFile: (context) => KeyTitanOpen(
               title: 'Open File',
               navigatorKey: _mainNavigatorKey,
             ),
-        KeyTitan.cloudSync:
-            (context) => keyTitanSync(
+        KeyTitan.cloudSync: (context) => KeyTitanSync(
               title: 'Drive Sync',
               navigatorKey: _mainNavigatorKey,
             ),
-        KeyTitan.passList:
-            (context) => keyTitanList(
+        KeyTitan.passList: (context) => KeyTitanList(
               title: 'Password List',
               navigatorKey: _mainNavigatorKey,
             ),
-        KeyTitan.exit:
-            (context) => keyTitanExit(
+        KeyTitan.exit: (context) => KeyTitanExit(
               title: 'Exiting',
-              navigatorKey: _mainNavigatorKey
+              navigatorKey: _mainNavigatorKey,
             )
       },
     );
   }
 }
 
-
-class keyTitanHome extends StatefulWidget {
-  // ignore: use_super_parameters
-  const keyTitanHome({Key? key, required this.title, required this.navigatorKey})
-    : super(key: key);
+/// The Landing Screen of the application
+class KeyTitanHome extends StatefulWidget {
+  const KeyTitanHome({
+    super.key, 
+    required this.title, 
+    required this.navigatorKey
+  });
 
   final String title;
   final GlobalKey<NavigatorState> navigatorKey;
 
   @override
-  State<keyTitanHome> createState() => _keyTitanHomeState();
+  State<KeyTitanHome> createState() => _KeyTitanHomeState();
 }
 
-class _keyTitanHomeState extends State<keyTitanHome> {
+class _KeyTitanHomeState extends State<KeyTitanHome> {
+  
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Initialize layout constants based on screen size once
+    final double screenHeight = MediaQuery.of(context).size.height;
+    if (Platform.isWindows || Platform.isLinux) {
+      Constants.cardHeight = screenHeight * 0.155;
+      Constants.cardSepHeight = screenHeight * 0.055;
+    } else {
+      Constants.cardHeight = screenHeight * 0.12;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Optimization: Pre-calculate the list of info to avoid mapping inside the builder
+    final cardData = CardInfo.values.toList();
+
     return Scaffold(
       appBar: genTitanAppBar(widget.title),
-      bottomSheet: bottomBar(context),      
+      bottomSheet: bottomBar(context),
       backgroundColor: Constants.backColor,
-      body: Flex(
-        direction: Axis.vertical,
-        clipBehavior: Clip.antiAlias,
-        children: [
-          Container(
-            decoration: Constants.backgroundDecoration,
-            child: Container(
-              child: ListView.separated(
-                shrinkWrap: true,
-                physics: NeverScrollableScrollPhysics(),
-                scrollDirection: Axis.vertical,
-                padding: EdgeInsets.symmetric(
-                  vertical: Constants.cardSepHeight / 4,
-                  horizontal: 20,
-                ),
-                itemCount: CardInfo.values.length,
-                itemBuilder: (BuildContext context, int index) {
-                  var myCards =
-                      CardInfo.values.map((CardInfo info) {
-                        return ElevatedButton.icon(
-                          onPressed: () {
-                            widget.navigatorKey.currentState!.pushNamed(
-                              info.loadState,
-                            );
-                          },
-                          label: Text(info.label, style: TextStyle(
-                              color: Constants.lightText,
-                            ),),
-                          icon: Icon(info.icon, color: Constants.lightText),
-                          style: ElevatedButton.styleFrom(
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(28.0),
-                            ),
-                            padding: EdgeInsets.zero,
-                            fixedSize: Size(10, Constants.cardHeight),
-                            backgroundColor: Constants.cardColor,
-                            //shadowColor: Constants.appBarShadow,
-                          ),
-                        );
-                      }).toList();
-                  return myCards[index];
-                },
-                separatorBuilder:
-                    (BuildContext context, int index) =>
-                        Divider(height: Constants.cardSepHeight, thickness: 0, color: Constants.lightText,),
-              ),
-            ),
+      body: Container(
+        decoration: Constants.backgroundDecoration,
+        child: ListView.separated(
+          padding: EdgeInsets.symmetric(
+            vertical: Constants.cardSepHeight,
+            horizontal: 20,
           ),
-        ],
+          itemCount: cardData.length,
+          separatorBuilder: (context, index) => 
+              Divider(height: Constants.cardSepHeight, thickness: 0, color: Colors.transparent),
+          itemBuilder: (context, index) {
+            final info = cardData[index];
+            return TitanButton(
+              label: info.label,
+              icon: info.icon,
+              onPressed: () => widget.navigatorKey.currentState!.pushNamed(info.loadState),
+              height: Constants.cardHeight,
+              color: Constants.cardColor,
+            );
+          },
+        ),
       ),
     );
   }
 }
 
-class keyTitanExit extends StatefulWidget {
-  const keyTitanExit({Key? key, required this.title, required this.navigatorKey})
-      : super(key: key);
+/// Confirm Exit Screen with graceful shutdown logic
+class KeyTitanExit extends StatefulWidget {
+  const KeyTitanExit({
+    super.key, 
+    required this.title, 
+    required this.navigatorKey
+  });
 
   final String title;
   final GlobalKey<NavigatorState> navigatorKey;
 
   @override
-  State<keyTitanExit> createState() => _keyTitanExitState();
+  State<KeyTitanExit> createState() => _KeyTitanExitState();
 }
 
-class _keyTitanExitState extends State<keyTitanExit> {
-  bool _exiting = false;
+class _KeyTitanExitState extends State<KeyTitanExit> {
+  bool _isExiting = false;
 
   Future<void> _gracefulExit() async {
-    if (_exiting) return;
-    setState(() => _exiting = true);
+    if (_isExiting) return;
+    setState(() => _isExiting = true);
 
-    // TODO: add any cleanup here (close DB, flush caches, etc.)
-    await Future.delayed(const Duration(milliseconds: 200));
+    // Placeholder for cleanup: Close DB, clear secure storage, etc.
+    await Future.delayed(const Duration(milliseconds: 300));
 
     exit(0);
   }
 
   @override
   Widget build(BuildContext context) {
+    final double buttonWidth = MediaQuery.of(context).size.width / 3;
+
     return Scaffold(
       appBar: genTitanAppBar(widget.title),
       backgroundColor: Constants.backColor,
       body: Center(
         child: Padding(
           padding: const EdgeInsets.all(20.0),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text(
-              'Are you sure you want to exit?',
-              style: TextStyle(
-                fontSize: Constants.menuTextSize.toDouble(),
-                color: Constants.lightText,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'Are you sure you want to exit?',
+                style: TextStyle(
+                  fontSize: Constants.menuTextSize.toDouble(),
+                  color: Constants.lightText,
+                ),
+                textAlign: TextAlign.center,
               ),
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 20),
-            if (_exiting) const CircularProgressIndicator(),
-            if (!_exiting)
-              Row(mainAxisSize: MainAxisSize.min, children: [
-                ElevatedButton(
-                  onPressed: () => widget.navigatorKey.currentState!.pop(),
-                  child: const Text('Cancel'),
-                  style: ElevatedButton.styleFrom(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20.0),
+              const SizedBox(height: 30),
+              if (_isExiting) 
+                const CircularProgressIndicator()
+              else
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TitanButton(
+                      label: 'Cancel',
+                      onPressed: () => widget.navigatorKey.currentState!.pop(),
+                      width: buttonWidth,
+                      height: Constants.cardHeight / 2,
+                      color: Constants.cardColor,
                     ),
-                    padding: EdgeInsets.zero,
-                    fixedSize: Size(
-                      MediaQuery.of(context).size.width / 3,
-                      Constants.cardHeight/2,
+                    const SizedBox(width: 16),
+                    TitanButton(
+                      label: 'Exit',
+                      onPressed: _gracefulExit,
+                      width: buttonWidth,
+                      height: Constants.cardHeight / 2,
+                      color: Colors.orangeAccent,
                     ),
-                    backgroundColor: Constants.cardColor,
-                    //shadowColor: Constants.appBarShadow,
-                  ),
+                  ],
                 ),
-                const SizedBox(width: 16),
-                ElevatedButton(
-                  onPressed: _gracefulExit,
-                  style: ElevatedButton.styleFrom(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(20.0),
-                    ),
-                    padding: EdgeInsets.zero,
-                    fixedSize: Size(
-                      MediaQuery.of(context).size.width / 3,
-                      Constants.cardHeight/2,
-                    ),
-                    backgroundColor: Colors.orangeAccent,
-                    //shadowColor: Constants.appBarShadow,
-                  ),
-                  child: const Text('Exit'),
-
-                ),
-              ]),
-          ]),
+            ],
+          ),
         ),
       ),
     );

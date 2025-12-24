@@ -1,256 +1,185 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-import 'package:googleapis/drive/v3.dart';
-import 'package:googleapis_auth/googleapis_auth.dart';
+import 'package:googleapis/drive/v3.dart' as drive;
 import 'package:file_picker/file_picker.dart';
-import 'package:path/path.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:http/http.dart' as http;
+import 'package:path/path.dart' as p;
 import 'globals.dart';
 import 'secstore.dart';
 
-class keyTitanSync extends StatefulWidget {
-  const keyTitanSync({Key? key, required this.title, required this.navigatorKey})
-    : super(key: key);
+class KeyTitanSync extends StatefulWidget {
+  const KeyTitanSync({Key? key, required this.title, required this.navigatorKey})
+      : super(key: key);
 
   final String title;
   final GlobalKey<NavigatorState> navigatorKey;
 
   @override
-  State<keyTitanSync> createState() => _keyTitanSyncState();
+  State<KeyTitanSync> createState() => _KeyTitanSyncState();
 }
 
-class _keyTitanSyncState extends State<keyTitanSync> {
-  // ignore: prefer_final_fields
-  Key _refreshKey = UniqueKey();
-  bool authenticated = false;
-  List<String> scopes = ['https://www.googleapis.com/auth/drive.metadata',
-    'https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive.readonly'];
-  String _body = 'Please authenticate';
-  List<String> lKTFiles = [];
-  List<File> KTFiles = [];
-  var KTPathCon = TextEditingController();
-
+class _KeyTitanSyncState extends State<KeyTitanSync> {
+  bool _isAuthenticating = false;
+  bool _isAuthenticated = false;
+  bool _isUploading = false;
+  
+  List<File> _localFiles = [];
+  final _pathController = TextEditingController();
+  final _googleDrive = GoogleDrive();
 
   @override
   void dispose() {
-    KTPathCon.dispose();
+    _pathController.dispose();
     super.dispose();
   }
 
-  void driveAuth() async {
-    String clientID = '';
-    debugPrint('Attempting Authentication');
-    //AutoRefreshingAuthClient hClient = AutoRefreshingAuthClient();
-    try{ 
-      debugPrint('creating signin');
-      GoogleDrive oauth2 = GoogleDrive(); 
-      var hClient = await oauth2.getHttpClient();
-
-      debugPrint('grabbing files');
-      DriveApi myDrive = DriveApi(hClient);
-      FileList fileList = await myDrive.files.list();
-      for(int i = 0; i < fileList.files!.length; i++) {
-        File temp = fileList.files![i];
-        if(temp.name!.endsWith('.ktn')){
-          KTFiles.add(temp);
-          debugPrint('ID  : ${temp.id}');
-          debugPrint('Name: ${temp.name}');
-        }
+  /// Handles Google OAuth2 Authentication via secstore logic
+  Future<void> _handleAuthentication() async {
+    setState(() => _isAuthenticating = true);
+    try {
+      // Logic from secstore.dart to get an authenticated client
+      final client = await _googleDrive.getHttpClient();
+      if (client != null) {
+        setState(() {
+          _isAuthenticated = true;
+          _isAuthenticating = false;
+        });
       }
-      debugPrint('updating state');
+    } catch (e) {
+      debugPrint('Auth Error: $e');
+      setState(() => _isAuthenticating = false);
+      _showSnackBar('Authentication failed. Please try again.');
+    }
+  }
+
+  /// Scans the selected directory for .ktn (KeyTitan) files
+  Future<void> _pickDirectory() async {
+    String? selectedPath = await FilePicker.platform.getDirectoryPath();
+    
+    if (selectedPath != null) {
+      final dir = Directory(selectedPath);
+      final List<FileSystemEntity> entities = await dir.list().toList();
+      
       setState(() {
-        
-        authenticated = true;
-        _refreshKey = UniqueKey();
+        _pathController.text = selectedPath;
+        _localFiles = entities
+            .whereType<File>()
+            .where((file) => p.extension(file.path) == '.ktn')
+            .toList();
       });
     }
-    catch(e) {
-      debugPrint(e.toString());
+  }
+
+  /// Uploads the discovered files to the 'KeyTitanBackup' folder in Drive
+  Future<void> _handleUpload() async {
+    if (_localFiles.isEmpty) {
+      _showSnackBar('No vault files found to upload.');
+      return;
     }
-  }
 
-  void driveUpload() {
-    debugPrint('Uploading');
-    _refreshKey = UniqueKey();
-  }
-
-  Future<void> _handleGetDrive() async {
-    setState(() { 
-      //debugPrint(_currentUser?.displayName.toString());
-    });
-  }
-
-  void pickDirectory() async {
-    lKTFiles = [];
-    final docsDir = await getApplicationDocumentsDirectory();
-    String? selectedDirectory = await FilePicker.platform.getDirectoryPath(initialDirectory: docsDir.path);
-    if (selectedDirectory != null) {
-      KTPathCon.text = selectedDirectory;
-      try{
-        List<FileSystemEntity> localList = await Directory(KTPathCon.text).list().toList();
-        for(int i = 0; i < localList.length; i++) {
-          String tName = basename(localList[i].path);
-          if(tName.endsWith('.ktn')){
-            lKTFiles.add(tName);
-          }
-        }
+    setState(() => _isUploading = true);
+    try {
+      for (var file in _localFiles) {
+        await _googleDrive.uploadFileToGoogleDrive(file);
       }
-      catch(e) { debugPrint('$e'); }      
-    } else {
-      KTPathCon.text = '';
+      _showSnackBar('Successfully backed up ${_localFiles.length} files!');
+    } catch (e) {
+      debugPrint('Upload Error: $e');
+      _showSnackBar('Upload failed. Check your connection.');
+    } finally {
+      setState(() => _isUploading = false);
     }
-    _refreshKey = UniqueKey();
+  }
+
+  void _showSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
   Widget build(BuildContext context) {
-    var height = MediaQuery.of(context).size.height;
-    var width = MediaQuery.of(context).size.width;
-    var btnWidth = width / 2;
-    var btnHeight = height / 10;
-    KTPathCon.text ??= '';
     return Scaffold(
       appBar: genTitanAppBar(widget.title),
-      bottomSheet: bottomBar(context),      
       backgroundColor: Constants.backColor,
-      body: Flex(
-        direction: Axis.vertical,
-        clipBehavior: Clip.antiAlias,
-        mainAxisSize: MainAxisSize.max,
-        mainAxisAlignment: MainAxisAlignment.start,
-        children: [
-          Container(
-            padding: EdgeInsets.symmetric(
-              vertical: 20,
-              horizontal: 20,
+      bottomSheet: bottomBar(context),
+      body: Container(
+        padding: const EdgeInsets.all(24.0),
+        decoration: Constants.backgroundDecoration,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _buildStepCard(
+              step: "1",
+              title: "Authenticate",
+              child: _isAuthenticating 
+                ? const Center(child: CircularProgressIndicator())
+                : ElevatedButton.icon(
+                    onPressed: _isAuthenticated ? null : _handleAuthentication,
+                    icon: Icon(_isAuthenticated ? Icons.check_circle : Icons.login),
+                    label: Text(_isAuthenticated ? "Authenticated" : "Sign in to Google"),
+                  ),
             ),
-            decoration: Constants.backgroundDecoration,
-            height: height*0.92,
-            child: Column(
-              key: _refreshKey,
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.center,
-              mainAxisSize: MainAxisSize.max,
-              spacing: height*0.03,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: !authenticated ? pickDirectory : null,
-                  label: Text('1) Pick a Local Directory\n${KTPathCon.text}', style: TextStyle(
-                      color: Constants.lightText,
-                    ),),
-                  icon: Icon(Icons.folder, color: Constants.lightText),
-                  style: ElevatedButton.styleFrom(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(28.0),
-                    ),
-                    padding: EdgeInsets.zero,
-                    fixedSize: Size(btnWidth, btnHeight),
-                    backgroundColor: Constants.cardColor,
-                    disabledBackgroundColor: Constants.appBarShadow,
-                    disabledForegroundColor: Constants.cardColor                    
-                  ),
-                ),                
-                ElevatedButton.icon(
-                  onPressed: !authenticated ? driveAuth : null,
-                  label: Text('2) Authenticate With Drive', style: TextStyle(
-                      color: Constants.lightText,
-                    ),),
-                  icon: Icon(Icons.login, color: Constants.lightText),
-                  style: ElevatedButton.styleFrom(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(28.0),
-                    ),
-                    padding: EdgeInsets.zero,
-                    fixedSize: Size(btnWidth, btnHeight),
-                    backgroundColor: Constants.cardColor,
-                    disabledBackgroundColor: Constants.appBarShadow,
-                    disabledForegroundColor: Constants.cardColor                    
-                  ),
-                ),
-                Divider(height: height*0.05, thickness: 0, color: Constants.lightText,),
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    Column( children: [
-                      Text(
-                        'Local Files',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: Constants.lightText,
-                        ),
+            const SizedBox(height: 20),
+            _buildStepCard(
+              step: "2",
+              title: "Select Local Vaults",
+              child: Column(
+                children: [
+                  TextField(
+                    controller: _pathController,
+                    readOnly: true,
+                    style: const TextStyle(color: Colors.white70, fontSize: 12),
+                    decoration: InputDecoration(
+                      hintText: "No directory selected",
+                      suffixIcon: IconButton(
+                        icon: const Icon(Icons.folder_open),
+                        onPressed: _pickDirectory,
                       ),
-                      Container(
-                        height: height*.3,
-                        width: width*.45,
-                        child: ListView.separated(
-                          padding: EdgeInsets.all(10),
-                          itemBuilder: (BuildContext context, int index) {
-                            return Container(
-                              height: 50,
-                              color: Constants.cardColor,
-                              child: Center(child: Text(lKTFiles[index], style: TextStyle(color: Constants.lightText),),),
-                            );
-                          }, 
-                          separatorBuilder: (BuildContext context, int index) => const Divider(), 
-                          itemCount: lKTFiles.length
-                        )
-                      )
-                    ]),
-                    VerticalDivider(width: 1, thickness: 5,),
-                    Column( children: [
-                      Text(
-                        'Drive Files',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          color: Constants.lightText,
-                        ),
-                      ),
-                      Container(
-                        height: height*.3,
-                        width: width*.45,
-                        child: ListView.separated(
-                          padding: EdgeInsets.all(10),
-                          itemBuilder: (BuildContext context, int index) {
-                            String rname = KTFiles[index].name as String;
-                            return Container(
-                              height: 50,
-                              color: Constants.cardColor,
-                              child: Center(child: Text(rname, style: TextStyle(color: Constants.lightText)),),
-                            );
-                          }, 
-                          separatorBuilder: (BuildContext context, int index) => const Divider(), 
-                          itemCount: KTFiles.length
-                        )
-                      )
-                    ],)
-                  ],
-                ),
-                ElevatedButton.icon(
-                  onPressed: authenticated ? driveUpload : null,
-                  label: Text('3) Upload To Drive', style: TextStyle(
-                      color: Constants.lightText,
-                    ),),
-                  icon: Icon(Icons.login, color: Constants.lightText),
-                  style: ElevatedButton.styleFrom(
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(28.0),
                     ),
-                    padding: EdgeInsets.zero,
-                    fixedSize: Size(btnWidth, btnHeight),
-                    backgroundColor: Constants.cardColor,
-                    disabledBackgroundColor: Constants.appBarShadow,
-                    disabledForegroundColor: Constants.cardColor
                   ),
-                ),
-              ],
+                  if (_localFiles.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 10),
+                      child: Text("${_localFiles.length} vault(s) found", 
+                        style: const TextStyle(color: Colors.greenAccent)),
+                    ),
+                ],
+              ),
             ),
-          ),
-        ]
-      )
+            const SizedBox(height: 20),
+            _buildStepCard(
+              step: "3",
+              title: "Cloud Backup",
+              child: _isUploading
+                ? const Center(child: CircularProgressIndicator())
+                : ElevatedButton.icon(
+                    onPressed: (_isAuthenticated && _localFiles.isNotEmpty) ? _handleUpload : null,
+                    icon: const Icon(Icons.cloud_upload),
+                    label: const Text("Upload to Drive"),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey.shade800),
+                  ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildStepCard({required String step, required String title, required Widget child}) {
+    return Card(
+      color: Constants.cardColor,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text("STEP $step: $title", 
+              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white54, fontSize: 12)),
+            const SizedBox(height: 12),
+            child,
+          ],
+        ),
+      ),
     );
   }
 }

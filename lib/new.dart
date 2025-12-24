@@ -2,189 +2,179 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
-//import 'package:keytitan/path.dart';
 import 'passwords.dart';
 import 'globals.dart';
 
-class keyTitanNew extends StatefulWidget {
-  const keyTitanNew({Key? key, required this.title, required this.navigatorKey})
-    : super(key: key);
+class KeyTitanNew extends StatefulWidget {
+  const KeyTitanNew({Key? key, required this.title, required this.navigatorKey})
+      : super(key: key);
 
   final String title;
   final GlobalKey<NavigatorState> navigatorKey;
 
   @override
-  State<keyTitanNew> createState() => _keyTitanNewState();
+  State<KeyTitanNew> createState() => _KeyTitanNewState();
 }
 
-class _keyTitanNewState extends State<keyTitanNew> {
-  var fileNameCon = TextEditingController();
-  var fileDispCon = TextEditingController();
-  var filePathCon = TextEditingController();
-  var filePassCon = TextEditingController();
-  var fileVerfCon = TextEditingController();
+class _KeyTitanNewState extends State<KeyTitanNew> {
+  final _formKey = GlobalKey<FormState>();
+  
+  // Controllers for form fields
+  final _fileNameController = TextEditingController();
+  final _filePathController = TextEditingController();
+  final _passController = TextEditingController();
+  final _verifyController = TextEditingController();
 
   @override
   void dispose() {
-    fileNameCon.dispose();
-    filePathCon.dispose();
-    fileDispCon.dispose();
-    filePassCon.dispose();
-    fileVerfCon.dispose();
+    _fileNameController.dispose();
+    _filePathController.dispose();
+    _passController.dispose();
+    _verifyController.dispose();
     super.dispose();
   }
 
-  String? passValidator(String? pass1, String pass2) {
-    if (pass1 == null || pass1 == '') {
-      return 'Please enter a password!';
-    } else if (pass1 != pass2) {
-      return 'Passwords don\'t match!';
+  /// Handles the directory selection via FilePicker
+  Future<void> _pickDirectory() async {
+    final docsDir = await getApplicationDocumentsDirectory();
+    String? selectedDirectory = await FilePicker.platform.getDirectoryPath(
+      initialDirectory: docsDir.path,
+    );
+
+    if (selectedDirectory != null) {
+      setState(() {
+        _filePathController.text = selectedDirectory;
+      });
     }
-    return null;
   }
 
-    String? fileValidator(String? inFile, String? filePath) {
-    if (inFile == null || inFile == '') {
-      return 'Please enter a valid filename!';
-    } 
-    else if (filePath == null || filePath == '') {
-      return 'Please choose a valid directory!';
+  /// Logic to finalize the file creation and navigate
+  void _handleCreateFile() {
+    if (_formKey.currentState!.validate()) {
+      final String fileName = _fileNameController.text.trim();
+      final String path = _filePathController.text;
+      final String pass = _passController.text;
+
+      // Construct full path and ensure the extension is added
+      final String fullPath = '$path${Platform.pathSeparator}$fileName.ktn';
+      
+      // Initialize the passFile object
+      final passFile pFile = passFile(fullPath, pass);
+      
+      // Create the underlying SQL file before navigating
+      pFile.newSQLFile();
+
+      debugPrint('Created New KeyTitan File: ${pFile.fileName}');
+
+      // Navigate to the list view, passing the new file object
+      Navigator.of(context, rootNavigator: true).pop();
+      Navigator.pushNamed(context, KeyTitan.passList, arguments: pFile);
     }
-    return null;
   }
 
   @override
   Widget build(BuildContext context) {
-    final _formKey = GlobalKey<FormState>();
     return Scaffold(
       appBar: genTitanAppBar(widget.title),
-      bottomSheet: bottomBar(context),      
+      bottomSheet: bottomBar(context),
       backgroundColor: Constants.backColor,
       body: Container(
-         decoration: Constants.backgroundDecoration,
+        decoration: Constants.backgroundDecoration,
+        padding: const EdgeInsets.symmetric(horizontal: 24.0),
         child: Form(
           key: _formKey,
-          child: StatefulBuilder(
-            builder: (BuildContext context, StateSetter setState) {
-              return Column(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: <Widget>[
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Spacer(flex: 1,),
-                      Text('Pick Directory: ', style: TextStyle(color: Constants.lightText),),
-                      TextButton(
-                        onPressed: () {
-                          pickDirectory();
-                        },
-                        child: Text('Click to Choose Directory', style: TextStyle(color: Constants.lightText),),
-                      ),
-                      Spacer(flex: 1,)
-                    ],
-                  ),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Spacer(flex: 1,),
-                      Expanded(flex: 2, child: TextFormField(controller: filePathCon, enabled: false,style: TextStyle(color: Constants.lightText)),),
-                      Spacer(flex: 1,),
-                    ]
-                  ),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Spacer(flex: 2,),
-                      Expanded(flex: 3, child: Text('File Name:   ', style: TextStyle(color: Constants.lightText),)),
-                      Expanded(flex: 6, child: TextFormField(
-                        controller: fileNameCon,
-                        style: TextStyle(
-                          color: Constants.lightText
-                        ),
-                        validator: (String? inFile) {
-                          return fileValidator(inFile, filePathCon.text);
-                        },
-                      )),
-                      Expanded(flex: 3, child: Text('.ktn', style: TextStyle(color: Constants.lightText),)),
-                      Spacer(flex: 1,)
-                    ],
-                  ),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Spacer(flex: 1,),
-                      Expanded(flex: 2, child: Text('Password:  ', style: TextStyle(color: Constants.lightText),)),
-                      Expanded(flex: 4, child: TextFormField(
-                        controller: filePassCon, 
-                        obscureText: true,
-                        style: TextStyle(color: Constants.lightText),
-                        validator: (String? pass1) {
-                          return passValidator(pass1, fileVerfCon.text);
-                        },
-                      )),
-                      Spacer(flex: 1,)
-                    ],
-                  ),
-                  Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Spacer(flex: 1,),
-                      Expanded(flex: 2, child: Text('Verify:  ', style: TextStyle(color: Constants.lightText),)),
-                      Expanded(flex: 4, child: TextFormField(
-                        controller: fileVerfCon, 
-                        obscureText: true,
-                        style: TextStyle(color: Constants.lightText),
-                        validator: (String? pass2) {
-                          return passValidator(pass2, filePassCon.text);
-                        },
-                      )),
-                      Spacer(flex: 1,),
-                    ],
-                  ),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 12.0),
-                    child: ElevatedButton(
-                      onPressed: () {
-                        if (_formKey.currentState!.validate()){
-                          createPassFile();
-                        }
-                      },
-                      child: Text('Create File'),
+          child: Center(
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildDirectoryPicker(),
+                  const SizedBox(height: 20),
+                  _buildFileNameField(),
+                  const SizedBox(height: 15),
+                  _buildPasswordField('Password', _passController, true),
+                  const SizedBox(height: 15),
+                  _buildPasswordField('Verify Password', _verifyController, false),
+                  const SizedBox(height: 30),
+                  ElevatedButton(
+                    onPressed: _handleCreateFile,
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
                     ),
+                    child: const Text('Create Vault File'),
                   ),
                 ],
-              );
-            },
+              ),
+            ),
           ),
         ),
       ),
     );
   }
 
-  void pickDirectory() async {
-    final docsDir = await getApplicationDocumentsDirectory();
-    String? selectedDirectory = await FilePicker.platform.getDirectoryPath(initialDirectory: docsDir.path);
-    if (selectedDirectory != null) {
-      filePathCon.text = selectedDirectory;
-    } else {
-      filePathCon.text = '';
-    }
+  Widget _buildDirectoryPicker() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Location', style: TextStyle(color: Constants.lightText, fontWeight: FontWeight.bold)),
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                controller: _filePathController,
+                readOnly: true,
+                style: TextStyle(color: Constants.lightText),
+                decoration: InputDecoration(
+                  hintText: 'No directory selected',
+                  hintStyle: TextStyle(color: Constants.lightText.withOpacity(0.5)),
+                ),
+                validator: (val) => (val == null || val.isEmpty) ? 'Please select a directory' : null,
+              ),
+            ),
+            IconButton(
+              icon: Icon(Icons.folder_open, color: Constants.lightText),
+              onPressed: _pickDirectory,
+            ),
+          ],
+        ),
+      ],
+    );
   }
 
-  void createPassFile() {
-    var file = fileNameCon.text;
-    var path = filePathCon.text;
-    var pass = filePassCon.text;
+  Widget _buildFileNameField() {
+    return TextFormField(
+      controller: _fileNameController,
+      style: TextStyle(color: Constants.lightText),
+      decoration: InputDecoration(
+        labelText: 'File Name',
+        labelStyle: TextStyle(color: Constants.lightText),
+        suffixText: '.ktn',
+        suffixStyle: TextStyle(color: Constants.lightText),
+        enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Constants.lightText)),
+      ),
+      validator: (val) {
+        if (val == null || val.isEmpty) return 'Enter a filename';
+        if (val.contains(RegExp(r'[<>:"/\\|?*]'))) return 'Invalid characters in name';
+        return null;
+      },
+    );
+  }
 
-    String? fileName = '$path${Platform.pathSeparator}$file.ktn';
-    passFile pFile = passFile(fileName, pass);
-    debugPrint('New File: ${pFile.fileName}');
-    debugPrint('Popping new Navi off stack');
-    //pop the dialog box
-    NavigatorState navi = widget.navigatorKey.currentState!;
-    Navigator.of(this.context, rootNavigator: true).pop();
-    Navigator.pushNamed(this.context, KeyTitan.passList, arguments: pFile);
-    
+  Widget _buildPasswordField(String label, TextEditingController controller, bool isPrimary) {
+    return TextFormField(
+      controller: controller,
+      obscureText: true,
+      style: TextStyle(color: Constants.lightText),
+      decoration: InputDecoration(
+        labelText: label,
+        labelStyle: TextStyle(color: Constants.lightText),
+        enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Constants.lightText)),
+      ),
+      validator: (val) {
+        if (val == null || val.isEmpty) return 'Password required';
+        if (!isPrimary && val != _passController.text) return 'Passwords do not match';
+        return null;
+      },
+    );
   }
 }

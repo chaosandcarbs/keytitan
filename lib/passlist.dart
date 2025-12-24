@@ -1,24 +1,23 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:ui';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'globals.dart';
 import 'passwords.dart';
 
-class keyTitanList extends StatefulWidget {
-  const keyTitanList({Key? key, required this.title, required this.navigatorKey})
-    : super(key: key);
+class KeyTitanList extends StatefulWidget {
+  const KeyTitanList({Key? key, required this.title, required this.navigatorKey})
+      : super(key: key);
 
   final String title;
   final GlobalKey<NavigatorState> navigatorKey;
 
   @override
-  State<keyTitanList> createState() => _keyTitanListState();
+  State<KeyTitanList> createState() => _KeyTitanListState();
 }
 
-class _keyTitanListState extends State<keyTitanList> {
+class _KeyTitanListState extends State<KeyTitanList> {
   final headCon = TextEditingController();
   final idCon = TextEditingController();
   final titleCon = TextEditingController();
@@ -27,10 +26,12 @@ class _keyTitanListState extends State<keyTitanList> {
   final userCon = TextEditingController();
   final passCon = TextEditingController();
   final complexityCon = TextEditingController();
-  // ignore: prefer_final_fields
-  Key _refreshKey = UniqueKey();
-  late passFile pFile;
 
+  final ValueNotifier<int> _refreshTrigger = ValueNotifier<int>(0);
+  passFile? pFile;
+  bool _initialized = false;
+
+  @override
   void dispose() {
     headCon.dispose();
     idCon.dispose();
@@ -40,100 +41,26 @@ class _keyTitanListState extends State<keyTitanList> {
     userCon.dispose();
     passCon.dispose();
     complexityCon.dispose();
+    _refreshTrigger.dispose();
     super.dispose();
   }
 
-  void createPassword() async {
-
-    await pFile.insertPassword(
-      keyTitanPass(
-        id: int.parse(idCon.text),
-        title: titleCon.text,
-        site: siteCon.text,
-        category: catCon.text,
-        username: userCon.text,
-        password: passCon.text
-      )
-    );
-
-    setState(() {
-      _refreshKey = UniqueKey();
-    });
-    // pop the dialog box
-    Navigator.of(context, rootNavigator: true).pop();
-  }
-
-  void updatePassword() async {
-
-    await pFile.updatePassword(
-      keyTitanPass(
-        id: int.parse(idCon.text),
-        title: titleCon.text,
-        site: siteCon.text,
-        category: catCon.text,
-        username: userCon.text,
-        password: passCon.text
-      )
-    );
-
-    setState(() {
-      _refreshKey = UniqueKey();
-    });
-    // pop the dialog box
-    Navigator.of(context, rootNavigator: true).pop();
-    //pop the (unrefreshed) screen
-    //Navigator.of(context, rootNavigator: true).pop();
-    //push new refreshed screen
-    //widget.navigatorKey.currentState!.pushNamed(KeyTitan.passList, arguments: pFile);
-  }
-
-  void verifyPassFile() {
-    debugPrint('Found password file');
-    debugPrint('File Filename: ${pFile.fileName}');
-    debugPrint('File Encryptd: ${pFile.isEncrypted}');
-    debugPrint('File Password: ${pFile.password}');
-    //determine if the file exists
-    if(this.pFile.fileExists()){
-      // should be an existing file
-      if(this.pFile.isEncrypted) {
-        this.pFile.attemptDecrypt();
+@override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_initialized) {
+      final args = ModalRoute.of(context)!.settings.arguments;
+      
+      // Change the type check from Map to passFile
+      if (args != null && args is passFile) {
+        pFile = args;
+        // Since pFile is already decrypted in open.dart, 
+        // we just need to trigger a refresh to show the data.
+        _triggerRefresh(); 
       }
+      
+      _initialized = true;
     }
-    else{
-      // brand new file
-      this.pFile.newSQLFile();
-    }
-  }
-
-  void deletePassword(int id) async {
-    await pFile.deletePassword(id);
-    setState(() {
-      _refreshKey = UniqueKey();
-    });
-    Navigator.of(context, rootNavigator: true).pop();
-  }
-
-  void deletePasswordDialog(String title, int id) async {
-    final _formKey = GlobalKey<FormState>();
-    await showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        contentPadding: EdgeInsets.all(10),
-        scrollable: true,
-        content: Form(
-          key: _formKey,
-          child: Column(
-            children: [
-              Text('Are you sure you want to delete $title?'),
-              ElevatedButton(
-                onPressed: () { deletePassword(id); },
-                child: Text('Really Delete!', style: TextStyle(color: Colors.red))
-              )
-            ],
-          ),
-        ),
-      )
-    );
   }
 
   String? stringValidator(String? value, String field) {
@@ -143,29 +70,119 @@ class _keyTitanListState extends State<keyTitanList> {
     return null;
   }
 
-  void saveAndClose() {
-    try {
-      this.pFile.attemptEncrypt();
-    }
-    catch(except) { debugPrint(except.toString()); }
-    if(this.pFile.isEncrypted){
-      debugPrint('Encrypted Successfully');
-    }
-    closeOnly();
+  void createPassword() async {
+
+    await pFile!.savePassword(
+      keyTitanPass(
+        id: -1,//int.parse(idCon.text),
+        title: titleCon.text,
+        site: siteCon.text,
+        category: catCon.text,
+        username: userCon.text,
+        displayPassword: passCon.text
+      )
+    );
+
+    _triggerRefresh();
+    // pop the dialog box
+    Navigator.of(context, rootNavigator: true).pop();
   }
 
-  void closeOnly() {
-    //cleanup 
-    Clipboard.setData(ClipboardData(text: ''));
-    this.pFile.closeFiles();
-    setState(() {
-      pFile.fileName = '';
-      pFile.password = '';
-      _refreshKey = UniqueKey();
-    });
+  void updatePassword() async {
 
-    // pop pass list
+    await pFile!.savePassword(
+      keyTitanPass(
+        id: int.parse(idCon.text),
+        title: titleCon.text,
+        site: siteCon.text,
+        category: catCon.text,
+        username: userCon.text,
+        displayPassword: passCon.text
+      )
+    );
+
+    _triggerRefresh();
+    // pop the dialog box
     Navigator.of(context, rootNavigator: true).pop();
+    //pop the (unrefreshed) screen
+    //Navigator.of(context, rootNavigator: true).pop();
+    //push new refreshed screen
+    //widget.navigatorKey.currentState!.pushNamed(KeyTitan.passList, arguments: pFile);
+  }
+
+  void _verifyPassFile() async {
+    final file = File(pFile!.fileName);
+    if (await file.exists()) {
+      if (pFile!.isEncrypted) {
+        bool success = await pFile!.attemptDecrypt();
+        if (success) _triggerRefresh();
+      }
+    } else {
+      pFile!.newSQLFile();
+    }
+    if (mounted) {
+        setState(() {
+          // This empty setState tells Flutter that pFile is now 
+          // initialized and it's time to stop showing the spinner.
+        });
+    }
+  }
+
+  void _triggerRefresh() => _refreshTrigger.value++;
+
+  // --- Logic Methods ---
+
+  void saveEntry({bool isUpdate = false}) async {
+    await pFile!.savePassword(keyTitanPass(
+        id: int.tryParse(idCon.text) ?? -1,
+        title: titleCon.text,
+        site: siteCon.text,
+        category: catCon.text,
+        username: userCon.text,
+        displayPassword: passCon.text)); // Map UI text to displayPassword
+    _triggerRefresh();
+    Navigator.of(context, rootNavigator: true).pop();
+  }
+
+  void deletePassword(int id) async {
+    await pFile!.deletePassword(id);
+    _triggerRefresh();
+    Navigator.of(context, rootNavigator: true).pop(); 
+  }
+
+  Future<void> saveAndClose() async {
+    try {
+      await pFile!.attemptEncrypt();
+      await pFile!.dispose(); // Delete temp sqlite file
+    } catch (e) {
+      debugPrint(e.toString());
+    }
+    Navigator.of(context).pop();
+  }
+
+  void closeWithoutSaving() {
+    Clipboard.setData(const ClipboardData(text: ''));
+    pFile!.dispose();
+    Navigator.of(context).pop();
+  }
+
+  // --- UI Dialogs ---
+
+  void deletePasswordDialog(String title, int id) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Confirm Delete'),
+        content: Text('Are you sure you want to delete $title?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => deletePassword(id),
+            child: const Text('Delete', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
   }
 
   void passwordDialog({bool edit = false}) async {
@@ -183,10 +200,10 @@ class _keyTitanListState extends State<keyTitanList> {
       DropdownMenuEntry(value: Complexity.full.value, label: Complexity.full.text),
       DropdownMenuEntry(value: Complexity.luda.value, label: Complexity.luda.text),
     ];
-    double _passLength = Constants.defaultPassLength;
+    int _passLength = Constants.defaultPassLength;
     List<DropdownMenuEntry> menuList = [];
     menuList.add(DropdownMenuEntry(value: 0, label: ''));
-    List categories = await pFile.getCategories();
+    List categories = await pFile!.getCategories();
     for(int i = 0; i < categories.length; i++)
     {
       menuList.add(DropdownMenuEntry(value: categories[i]['id'], label: categories[i]['category']));
@@ -296,14 +313,14 @@ class _keyTitanListState extends State<keyTitanList> {
                         showValueIndicator: ShowValueIndicator.always,
                       ),
                       child: Slider(
-                        value: _passLength, 
+                        value: _passLength.toDouble(), 
                         label: 'Password Length: ${_passLength.toInt()}',
                         onChanged: (double value) { setState(() {
-                          _passLength = value; 
+                          _passLength = value.toInt(); 
                           passCon.text = keyTitanPass.genPassword(Complexity.getComplexity(complexityCon.text), _passLength.toInt());
                         });},
-                        min: Constants.minPassLength,
-                        max: Constants.maxPassLength,
+                        min: Constants.minPassLength.toDouble(),
+                        max: Constants.maxPassLength.toDouble(),
                         divisions: (Constants.maxPassLength-Constants.minPassLength).toInt(),
                       ),
                     ),
@@ -332,309 +349,212 @@ class _keyTitanListState extends State<keyTitanList> {
     );
   }
 
-
+  
   @override
   Widget build(BuildContext context) {
-    Object? sets = ModalRoute.of(context)!.settings.arguments;
-    if(sets != null) {
-      this.pFile = passFile.passObj(sets);
-      verifyPassFile();
+    if (pFile == null) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
     }
-    else{ 
-      debugPrint('No password file; arrived in error'); 
-    } 
-    Widget passwordFooterBar = Padding(
-      padding: EdgeInsets.all(10),
+    return ValueListenableBuilder(
+      valueListenable: _refreshTrigger,
+      builder: (context, _, __) {
+        return FutureBuilder<List<Map<String, dynamic>>>(
+          future: pFile!.getCategories(),
+          builder: (context, snapshot) {
+            if (snapshot.connectionState == ConnectionState.waiting) {
+              return const Scaffold(body: Center(child: CircularProgressIndicator()));
+            }
+
+            final categories = snapshot.data ?? [];
+            if (categories.isEmpty) {
+              return _buildEmptyState();
+            }
+
+            return DefaultTabController(
+              length: categories.length,
+              child: Scaffold(
+                appBar: AppBar(
+                  title: Text(widget.title),
+                  bottom: TabBar(
+                    isScrollable: true,
+                    tabs: categories.map((c) => Tab(text: c['category'])).toList(),
+                  ),
+                ),
+                bottomNavigationBar: _buildBottomActionNav(),
+                body: TabBarView(
+                  children: categories.map((cat) {
+                    return _CategoryListView(
+                      category: cat['category'],
+                      pFile: pFile!,
+                      masterPassword: pFile!.password, // Pass seed for decryption
+                      onEdit: (data, decryptedPass) {
+                        idCon.text = data['id'].toString();
+                        titleCon.text = data['title'];
+                        siteCon.text = data['site'] ?? '';
+                        catCon.text = cat['category'];
+                        userCon.text = data['username'] ?? '';
+                        passCon.text = decryptedPass;
+                        passwordDialog(edit: true);
+                      },
+                      onDelete: (title, id) => deletePasswordDialog(title, id),
+                    );
+                  }).toList(),
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildBottomActionNav() {
+    return BottomAppBar(
       child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
-          Expanded(flex: 6, child: FloatingActionButton.extended(
-            heroTag: 'newPassBtn',
-            onPressed: passwordDialog,
-            label: const Text('New Password'),
-            icon: const Icon(Icons.add),
-            backgroundColor: Constants.backColor,
-            foregroundColor: Constants.lightText,
-            extendedPadding: EdgeInsets.symmetric(
-              vertical: 10,
-              horizontal: 25,
-            ),
-          )),
-          Spacer(flex: 1,),
-          Expanded(flex: 6, child: FloatingActionButton.extended(
-            heroTag: 'saveCloseBtn',
-            onPressed: saveAndClose,
-            label: const Text('Save & Close'),
-            icon: const Icon(Icons.save_as_outlined),
-            backgroundColor: Constants.backColor,
-            foregroundColor: Constants.lightText,
-            extendedPadding: EdgeInsets.symmetric(
-              vertical: 10,
-              horizontal: 25,
-            ),
-          )),
-          Spacer(flex: 1,),
-          Expanded(flex: 4, child: FloatingActionButton.extended(
-            heroTag: 'closeBtn',
-            onPressed: closeOnly,
-            label: const Text('Close'),
-            icon: const Icon(Icons.logout),
-            backgroundColor: Constants.backColor,
-            foregroundColor: Constants.lightText,
-            extendedPadding: EdgeInsets.symmetric(
-              vertical: 10,
-              horizontal: 25,
-            ),
-          )),
+          IconButton(
+            icon: const Icon(Icons.add), 
+            color: Colors.green,
+            tooltip: 'Add New Password',
+            onPressed: () => passwordDialog()
+          ),
+          IconButton(
+            icon: const Icon(Icons.save), 
+            color: Colors.blueAccent,
+            tooltip: 'Save & Close',
+            onPressed: saveAndClose
+          ),
+          IconButton(
+            icon: const Icon(Icons.logout), 
+            color: Colors.redAccent,
+            tooltip: 'Close',
+            onPressed: closeWithoutSaving
+          ),
         ],
       ),
     );
-    return FutureBuilder(
-      key: _refreshKey,
-      future: this.pFile.getCategories(), builder: (context, catSnap) {
-        var returned = null;
-        while(true){ //returned.runtimeType != Center) {
-          if(catSnap.hasError) { returned = Center(child: Text(catSnap.error.toString())); }
-          else if (catSnap.data != null && catSnap.data!.isNotEmpty) { 
-            debugPrint('Snapshot has data: ${catSnap.data!.length}');
-            List<Tab> tabList = [];
-            var catData = catSnap.data;
-            for(int i = 0; i < catData!.length; i++) {
-              tabList.add(Tab(text: catData[i]['category'].toString(),));
-            }
-            return DefaultTabController(
-              length: tabList.length, 
-              //child: DefaultTabControllerListener(
-              //  onTabChanged: (int value) { debugPrint('Tab changed'); },
-                child: Scaffold( 
-                  key: _refreshKey,
-                  backgroundColor: Constants.backColor,
-                  appBar: genTitanAppBar(widget.title),
-                  bottomNavigationBar: Container(
-                    height: MediaQuery.of(context).size.height*0.078,
-                    width: MediaQuery.of(context).size.width,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      image: DecorationImage(
-                        image: Constants.backgroundImage,
-                        fit: BoxFit.fitWidth,
-                      ),
-                    ),
-                    child: passwordFooterBar,
-                  ),
-                  body: Column(
-                    crossAxisAlignment: CrossAxisAlignment.center, 
-                    mainAxisAlignment: MainAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.max,
-                    children: [
-                      Container(
-                        height: MediaQuery.of(context).size.height*0.06,
-                        width: MediaQuery.of(context).size.width,
-                        alignment: Alignment.center,
-                        decoration: Constants.backgroundDecoration,
-                        child: TabBar(
-                          tabs: tabList,
-                          isScrollable: true,
-                          dragStartBehavior: DragStartBehavior.down,
-                          tabAlignment: TabAlignment.center,
-                          labelColor: Constants.lightText,
-                          unselectedLabelColor: Constants.semiLightText,
-                          indicatorColor: Constants.appBarColor,
-                        ),
-                      ),
-                      Container(
-                        height: MediaQuery.of(context).size.height*0.79,
-                        width: MediaQuery.of(context).size.width,
-                        alignment: Alignment.center,
-                        decoration: Constants.backgroundDecoration,
-                        child: TabBarView(
-                          physics: PageScrollPhysics(),
-                          children: tabList.map((Tab tab) {
-                            return FutureBuilder(
-                              future: this.pFile.getPasswordsByCategory(tab.text.toString()), 
-                              builder: (context, pwdSnap) {
-                                if(pwdSnap.hasData && pwdSnap.data != null){
-                                  return ListView.builder(
-                                    padding: const EdgeInsets.all(10),
-                                    itemCount: pwdSnap.data!.length,
-                                    itemBuilder: (
-                                      BuildContext context,
-                                      int index,
-                                    ) {
-                                      return Card(
-                                        elevation: 6,
-                                        color: Constants.cardColor,
-                                        child: Column(
-                                          mainAxisSize: MainAxisSize.max,
-                                          children: <Widget>[
-                                            ListTile(
-                                              leading: const Icon(Icons.vpn_key_outlined),
-                                              title: Text(pwdSnap.data![index]['title']),
-                                              subtitle: Text('${pwdSnap.data![index]['site']} | ${pwdSnap.data![index]['username']}'),
-                                              textColor: Constants.lightText,
-                                              iconColor: Constants.lightText,
-                                            ),
-                                            Row(
-                                              mainAxisAlignment: MainAxisAlignment.end,
-                                              children: [
-                                                Spacer(flex: 1,),
-                                                Expanded(flex: 3,child: TextButton(
-                                                  child: const Text('Copy Password', style: TextStyle(color: Constants.lightText)),
-                                                  onPressed: () async {
-                                                    keyTitanPass thisPass = keyTitanPass(
-                                                      title: pwdSnap.data![index]['title'], 
-                                                      site: pwdSnap.data![index]['site'], 
-                                                      category: pwdSnap.data![index]['category'], 
-                                                      username: pwdSnap.data![index]['username'],
-                                                      password: pwdSnap.data![index]['password']
-                                                    );
-                                                    await Clipboard.setData(ClipboardData(text: thisPass.password));
-                                                  },
-                                                )),      
-                                                Spacer(flex: 2,),                                                                             
-                                                Expanded(flex: 2,child: TextButton(
-                                                  child: const Text('EDIT', style: TextStyle(color: Constants.lightText),),
-                                                  onPressed: () {
-                                                    keyTitanPass editing = keyTitanPass(
-                                                      id: pwdSnap.data![index]['id'],
-                                                      title: pwdSnap.data![index]['title'], 
-                                                      site: pwdSnap.data![index]['site'], 
-                                                      category: pwdSnap.data![index]['category'], 
-                                                      username: pwdSnap.data![index]['username'],
-                                                      password: pwdSnap.data![index]['password']
-                                                    );
-                                                    idCon.text = editing.id.toString();
-                                                    titleCon.text = editing.title;
-                                                    siteCon.text = editing.site;
-                                                    catCon.text = editing.category;
-                                                    userCon.text = editing.username;
-                                                    passCon.text = editing.password;
-                                                    passwordDialog(edit: true);
-                                                  },
-                                                )),
-                                                //const SizedBox(width: 25),
-                                                Expanded(flex: 2,child: TextButton(
-                                                  onPressed: (){
-                                                    deletePasswordDialog(pwdSnap.data![index]['title'], pwdSnap.data![index]['id']);
-                                                  }, 
-                                                  child: const Text('DELETE', style: TextStyle(color: Constants.lightText)),
-                                                ))
-                                              ],
-                                            ),
-                                          ],
-                                        ),
-                                      );
-                                    },
-                                  );
-                                }
-                                else { return Text('No Password Data'); }
-                              },
-                            );
-                          }).toList(),
-                        )
-                      )
-                    ]
-                  )
-                ),
-              //)
-            );
-          }
-          else {
-            returned = Scaffold( 
-              key: _refreshKey,
-              appBar: genTitanAppBar(widget.title),
-              backgroundColor: Constants.backColor,
-              bottomNavigationBar: Container(
-                height: MediaQuery.of(context).size.height*0.078,
-                width: MediaQuery.of(context).size.width,
-                alignment: Alignment.center,
-                decoration: Constants.backgroundDecoration,
-                child: passwordFooterBar,
-              ),
-              body: Column(
-                crossAxisAlignment: CrossAxisAlignment.center, 
-                mainAxisAlignment: MainAxisAlignment.start,
-                mainAxisSize: MainAxisSize.max,
-                children: [
-                  Container(
-                    height: MediaQuery.of(context).size.height*0.85,
-                    width: MediaQuery.of(context).size.width,
-                    alignment: Alignment.center,
-                    decoration: Constants.backgroundDecoration,
-                    child: Center(
-                      child: Text('No passwords exist yet', style: TextStyle(color: Constants.lightText, fontSize: 20,),),
-                    ),
-                  )
-                ],
-              )
-            );
-            return returned;
-          }
-        }
-      }
+  }
+
+  Widget _buildEmptyState() {
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.title)),
+      bottomNavigationBar: _buildBottomActionNav(),
+      body: Container(
+        decoration: Constants.backgroundDecoration,
+        child: Center(
+          child: const Text('Add Your First Password!\n Click the + button below',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w300)
+          ),
+        ),
+      ),
     );
   }
 }
 
+class _CategoryListView extends StatelessWidget {
+  final String category;
+  final passFile pFile;
+  final String masterPassword;
+  final Function(Map<String, dynamic>, String) onEdit;
+  final Function(String, int) onDelete;
 
-class DefaultTabControllerListener extends StatefulWidget {
-  const DefaultTabControllerListener({
-    required this.onTabChanged,
-    required this.child,
-    super.key,
+  const _CategoryListView({
+    required this.category,
+    required this.pFile,
+    required this.masterPassword,
+    required this.onEdit,
+    required this.onDelete,
   });
 
-  final ValueChanged<int> onTabChanged;
-  final Widget child;
-
-  @override
-  State<DefaultTabControllerListener> createState() =>
-      _DefaultTabControllerListenerState();
-}
-
-class _DefaultTabControllerListenerState
-    extends State<DefaultTabControllerListener> {
-  TabController? _controller;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final TabController? defaultTabController = DefaultTabController.maybeOf(
-      context,
-    );
-
-    assert(() {
-      if (defaultTabController == null) {
-        throw FlutterError(
-          'No DefaultTabController for ${widget.runtimeType}.\n'
-          'Error within KeyTitan types',
-        );
-      }
-      return true;
-    }());
-
-    if (defaultTabController != _controller) {
-      _controller?.removeListener(_listener);
-      _controller = defaultTabController;
-      _controller?.addListener(_listener);
+  Future<void> _launchInBrowser(String urlString) async {
+    if (!urlString.startsWith('https://') && !urlString.startsWith('http://')) {
+      urlString = 'https://$urlString';
     }
-  }
+    final Uri url = Uri.parse(urlString);
 
-  void _listener() {
-    final TabController? controller = _controller;
-    if (controller == null || controller.indexIsChanging) {
+    if (url.host.isEmpty || !url.host.contains('.')) {
       return;
     }
-    widget.onTabChanged(controller.index);
-  }
 
-  @override
-  void dispose() {
-    _controller?.removeListener(_listener);
-    super.dispose();
+    if (await canLaunchUrl(url)) {
+      await launchUrl(
+        url,
+        // This line ensures it opens in the external browser
+        mode: LaunchMode.externalApplication,
+      );
+    } else {
+      throw Exception('Could not launch $url');
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return widget.child;
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: pFile.getPasswordsByCategory(category),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) return const Center(child: CircularProgressIndicator());
+        final passwords = snapshot.data!;
+        
+        return Container(
+        width: double.infinity,
+        decoration: Constants.backgroundDecoration,
+        padding: const EdgeInsets.all(24.0),
+        child: ListView.builder(
+          itemCount: passwords.length,
+          itemBuilder: (context, index) {
+            final item = passwords[index];
+            // Decrypt the password for the UI
+            final decrypted = keyTitanPass.hdecrypt(masterPassword, item['password']);
+
+            return Card(
+              margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              child: ListTile(
+                title: Text(item['title']),
+                subtitle: Text((item['username'] ?? '')),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.link),
+                      tooltip: 'Open Site',
+                      color: Colors.blueAccent,
+                      onPressed: () => _launchInBrowser(item['site']),
+                    ),
+                    const SizedBox(width: Constants.cardIconSpacing), // spacing
+                    IconButton(
+                      icon: const Icon(Icons.copy),
+                      tooltip: 'Copy Password',
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: decrypted));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Password copied to clipboard'))
+                        );
+                      },
+                    ),
+                    const SizedBox(width: Constants.cardIconSpacing), // spacing
+                    IconButton(
+                      icon: const Icon(Icons.edit),
+                      tooltip: 'Edit Entry',
+                      color: Colors.orangeAccent,
+                      onPressed: () => onEdit(item, decrypted),
+                    ),
+                    const SizedBox(width: Constants.cardIconSpacing), // spacing
+                    IconButton(
+                      icon: const Icon(Icons.delete, color: Colors.red),
+                      tooltip: 'Delete Entry',
+                      onPressed: () => onDelete(item['title'], item['id']),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        )
+        );
+      },
+    );
   }
 }

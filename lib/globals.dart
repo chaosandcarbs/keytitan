@@ -1,80 +1,128 @@
-import 'dart:core';
 import 'package:flutter/material.dart';
 
+/// Centralized Route Names to prevent typos across the app
 class KeyTitan {
-  static const home = '/';
-  static const newFile = '/newFile';
-  static const openFile = '/openFile';
-  static const passList = '/passList';
-  static const cloudSync = '/cloudSync';
-  static const exit = '/exit';
+  static const String home = '/';
+  static const String newFile = '/new';
+  static const String openFile = '/open';
+  static const String cloudSync = '/sync';
+  static const String passList = '/list';
+  static const String exit = '/exit';
 }
 
+/// Enhanced Enum to store metadata for the Home Screen buttons.
+/// This removes the need for mapping logic inside the UI.
+enum CardInfo {
+  newFile(
+    label: 'New Password File',
+    icon: Icons.add_moderator_outlined,
+    loadState: KeyTitan.newFile,
+  ),
+  openFile(
+    label: 'Open Password File',
+    icon: Icons.file_open_outlined,
+    loadState: KeyTitan.openFile,
+  ),
+  cloudSync(
+    label: 'Google Drive Sync',
+    icon: Icons.cloud_sync_outlined,
+    loadState: KeyTitan.cloudSync,
+  ),
+  exit(
+    label: 'Exit KeyTitan',
+    icon: Icons.exit_to_app_outlined,
+    loadState: KeyTitan.exit,
+  );
+
+  final String label;
+  final IconData icon;
+  final String loadState;
+
+  const CardInfo({
+    required this.label,
+    required this.icon,
+    required this.loadState,
+  });
+}
+
+/// Global configuration and styling constants
 class Constants {
-  static const double paddingSmall = 8.0;
-  static double titleTextSize = 25;
-  static double menuTextSize = 23;
-  static double cardHeight = 75;
-  static double cardSepHeight = 75;
-  static const appBarColor = Color.fromARGB(255, 13, 36, 66);//0xFF1D3658
-  static const appBarShadow = Color.fromARGB(255, 38, 48, 56); 
-  static const backColor = Color(0xFF1D3658);//0xFF0D1B3E
-  static const Color cardColor = Color.fromARGB(255, 13, 36, 66);//0xFF124C73
-  static const lightText = Color(0xFFE6D9C3);
-  static const darkText = Color(0xFF1D3658);
-  static const semiLightText = Color(0xFFB2BBBE);
-  static const drawerColor = Color(0xFF546E7A); //shade600
-  static var colorScheme = ColorScheme.fromSeed(seedColor: Colors.blueGrey);
-  static const backgroundImage = AssetImage('assets/keytitan_background.png');
-  static const backgroundDecoration = BoxDecoration(image: DecorationImage(image: backgroundImage,fit: BoxFit.fill,opacity: 0.3,),);
-  static double defaultPassLength = 20;
-  static double minPassLength = 8;
-  static double maxPassLength = 40;
-}
+  // --- Colors ---
+  static const Color appBarColor = Color(0xFF263238); // BlueGrey 900
+  static const Color backColor = Color(0xFF101416);   // Darker background
+  static const Color cardColor = Color(0xFF37474F);   // BlueGrey 800
+  static const Color lightText = Colors.white70;
 
-Widget bottomBar(BuildContext context) {
-  return Container(color: Constants.appBarColor, height: 40);
-}
-
-genTitanAppBar(String appTitle) {
-  var leading = true; 
-  if (appTitle == 'Password List') { 
-    leading = false; 
-  }
-  return AppBar(
-    centerTitle: true,
-    toolbarHeight: 60,
-    automaticallyImplyLeading: leading,
-    title: Row(
-      children: [
-        Expanded(
-          child: Text(
-            appTitle,
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: Constants.titleTextSize),
-          ),
-        ),
-        CircleAvatar(
-          backgroundImage: AssetImage('assets/keytitan_rounded.png'),
-          radius: 30,
-          backgroundColor: Constants.appBarShadow,
-        ),
-      ],
+  static final BoxDecoration backgroundDecoration = BoxDecoration(
+    color: backColor,
+    image: DecorationImage(
+      image: const AssetImage('assets/keytitan_background.png'),
+      opacity: 0.25,
+      fit: BoxFit.cover,
     ),
+  );
+
+  static const ColorScheme colorScheme = ColorScheme(
+    brightness: Brightness.dark,
+    primary: Colors.blueGrey,
+    onPrimary: Colors.white,
+    secondary: Colors.orangeAccent,
+    onSecondary: Colors.black,
+    error: Colors.redAccent,
+    onError: Colors.white,
+    surface: cardColor,
+    onSurface: Colors.white,
+  );
+
+  // --- Layout & Spacing ---
+  // These are updated dynamically in main.dart based on platform
+  static double cardHeight = 120.0;
+  static double cardSepHeight = 20.0;
+  static const double cardIconSpacing = 20;
+  
+  // --- Typography ---
+  static double titleTextSize = 24.0;
+  static double menuTextSize = 12.0;
+
+  // --- Password Constants ---
+  static const int defaultPassLength = 15;
+  static const int maxPassLength = 32;
+  static const int minPassLength = 7;
+
+
+// --- Global UI Components ---
+
+}
+
+/// Standard AppBar used across most screens
+AppBar genTitanAppBar(String title) {
+  return AppBar(
+    title: Text(
+      title,
+      style: TextStyle(
+        fontSize: Constants.titleTextSize.toDouble(),
+        fontWeight: FontWeight.w300,
+        letterSpacing: 1.2,
+      ),
+    ),
+    centerTitle: true,
+    elevation: 4,
   );
 }
 
-enum CardInfo {
-  newCard('New Password File', KeyTitan.newFile, Icons.enhanced_encryption),
-  openCard('Open Password File', KeyTitan.openFile, Icons.lock_open),
-  //listCard('Password List', KeyTitan.passList, Icons.),
-  cloudCard('Sync With Google Drive', KeyTitan.cloudSync, Icons.vpn_lock),
-  exitCard('Close KeyTitan', KeyTitan.exit, Icons.exit_to_app);
-
-  const CardInfo(this.label, this.loadState, this.icon);
-  final String label;
-  final String loadState;
-  final IconData icon;
+/// Standard Bottom Bar for context/branding
+Widget bottomBar(BuildContext context) {
+  return Container(
+    height: 30,
+    width: double.infinity,
+    color: Constants.appBarColor,
+    child: const Center(
+      child: Text(
+        'KeyTitan | Secure & Local',
+        style: TextStyle(color: Colors.white54, fontSize: 10),
+      ),
+    ),
+  );
 }
 
 enum Complexity {
@@ -82,12 +130,7 @@ enum Complexity {
   basic(text: 'Basic [A-Za-z0-9!#&\$]', value: 1),
   full(text: 'Full; [A-Za-z0-9()[]!#&\$+-,.]', value: 2),
   luda(text: 'Ludicrous Mode', value: 3);
-
-  const Complexity({
-    required this.value,
-    required this.text,
-  });
-
+  
   final int value;
   final String text;
 
@@ -124,5 +167,57 @@ enum Complexity {
     else {
       return Complexity.basic;
     }          
+  }
+
+  const Complexity({
+    required this.value,
+    required this.text,
+  });
+}
+
+
+/// Reusable Styled Button to maintain UI consistency
+class TitanButton extends StatelessWidget {
+  final String label;
+  final VoidCallback onPressed;
+  final IconData? icon;
+  final double? width;
+  final double height;
+  final Color color;
+
+  const TitanButton({
+    super.key,
+    required this.label,
+    required this.onPressed,
+    this.icon,
+    this.width,
+    required this.height,
+    required this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final textStyle = TextStyle(color: Constants.lightText, fontSize: Constants.menuTextSize);
+    
+    final buttonStyle = ElevatedButton.styleFrom(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28.0)),
+      fixedSize: Size(width ?? double.maxFinite, height),
+      backgroundColor: color,
+    );
+
+    if (icon != null) {
+      return ElevatedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon, color: Constants.lightText, size: Constants.menuTextSize+6),
+        label: Text(label, style: textStyle),
+        style: buttonStyle,
+      );
+    }
+
+    return ElevatedButton(
+      onPressed: onPressed,
+      style: buttonStyle,
+      child: Text(label, style: textStyle),
+    );
   }
 }

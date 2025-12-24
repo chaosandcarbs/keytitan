@@ -8,129 +8,128 @@ import 'package:path/path.dart' as p;
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 
-
 class SecureStorage {
-  final storage = FlutterSecureStorage();
+  final storage = const FlutterSecureStorage();
 
-  //Save Credentials
-  Future saveCredentials(AccessToken token, String refreshToken) async {
-    debugPrint(token.expiry.toIso8601String());
-    await storage.write(key: "type", value: token.type);
-    await storage.write(key: "data", value: token.data);
-    await storage.write(key: "expiry", value: token.expiry.toString());
-    await storage.write(key: "refreshToken", value: refreshToken);
+  /// Saves both Access and Refresh tokens
+  Future<void> saveCredentials(AccessCredentials credentials) async {
+    await storage.write(key: "type", value: credentials.accessToken.type);
+    await storage.write(key: "data", value: credentials.accessToken.data);
+    await storage.write(key: "expiry", value: credentials.accessToken.expiry.toIso8601String());
+    if (credentials.refreshToken != null) {
+      await storage.write(key: "refreshToken", value: credentials.refreshToken);
+    }
   }
 
-  //Get Saved Credentials
-  Future<Map<String, dynamic>?> getCredentials() async {
-    var result = await storage.readAll();
-    if (result.isEmpty) return null;
-    return result;
+  /// Retrieves credentials and reconstructs the AccessCredentials object
+  Future<AccessCredentials?> getCredentials() async {
+    var data = await storage.readAll();
+    if (data.isEmpty || !data.containsKey("data")) return null;
+
+    final token = AccessToken(
+      data["type"]!,
+      data["data"]!,
+      DateTime.parse(data["expiry"]!),
+    );
+
+    return AccessCredentials(token, data["refreshToken"], ['https://www.googleapis.com/auth/drive.file']);
   }
 
-  //Clear Saved Credentials
-  Future clear() {
-    return storage.deleteAll();
-  }
+  Future<void> clear() => storage.deleteAll();
 }
 
 class GoogleDrive {
   final storage = SecureStorage();
-  final List<String> _scopes = ['https://www.googleapis.com/auth/drive.metadata','https://www.googleapis.com/auth/drive.file'];
+  
+  // Replace these with your actual Google Cloud Console credentials
+  static const _clientId = "YOUR_CLIENT_ID.apps.googleusercontent.com";
+  static const _clientSecret = "YOUR_CLIENT_SECRET";
+  final _scopes = [ga.DriveApi.driveFileScope, ga.DriveApi.driveMetadataReadonlyScope];
 
-  String _getClientID() {
-      if (Platform.isWindows || Platform.isLinux) {
-        return '200356226298-ikvdvavc6ohgpdoovlcrobt2b6mdp4bt.apps.googleusercontent.com';
-      }
-      else if (Platform.isAndroid) {
-        return '';
-      }
-      else {
-        return '200356226298-8hhkd2af08crjdsvibbctsacu13ahdgr.apps.googleusercontent.com';
-      }
-  }
+  /// Returns an authenticated HTTP client, refreshing tokens if necessary
+  Future<http.Client?> getHttpClient() async {
+    final credentials = await storage.getCredentials();
 
-  //Get Authenticated Http Client
-  Future<http.Client> getHttpClient() async {
-    //Get Credentials
-    var credentials = null;//await storage.getCredentials();
     if (credentials == null) {
-      //Needs user authentication
-      var authClient = await clientViaUserConsent(
-          ClientId(_getClientID(),'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'),_scopes, (url) {
-        //Open Url in Browser
-        launchUrl(Uri.parse(url));
-      });
-      //Save Credentials
-      await storage.saveCredentials(authClient.credentials.accessToken,
-          authClient.credentials.refreshToken!);
-      return authClient;
-    } else {
-      debugPrint(credentials["expiry"]);
-      //Already authenticated
-      return authenticatedClient(
-          http.Client(),
-          AccessCredentials(
-              AccessToken(credentials["type"], credentials["data"],
-                  DateTime.tryParse(credentials["expiry"])!),
-              credentials["refreshToken"],
-              _scopes));
+      // Start initial Auth flow
+      return await _authenticateUser();
     }
+
+    // Wrap the client to handle automatic refreshes
+    return authenticatedClient(
+      http.Client(),
+      credentials,
+    );
   }
 
-// check if the directory forlder is already available in drive , if available return its id
-// if not available create a folder in drive and return id
-//   if not able to create id then it means user authetication has failed
-  Future<String?> _getFolderId(ga.DriveApi driveApi) async {
-    final mimeType = "application/vnd.google-apps.folder";
-    String folderName = "personalDiaryBackup";
-
+  Future<http.Client?> _authenticateUser() async {
+    final id = ClientId(_clientId, _clientSecret);
+    
     try {
-      final found = await driveApi.files.list(
-        q: "mimeType = '$mimeType' and name = '$folderName'",
-        $fields: "files(id, name)",
-      );
-      final files = found.files;
-      if (files == null) {
-        debugPrint("Sign-in first Error");
-        return null;
-      }
+      final client = await clientViaUserConsent(id, _scopes, (url) async {
+        final uri = Uri.parse(url);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+        } else {
+          throw 'Could not launch $url';
+        }
+      });
 
-      // The folder already exists
-      if (files.isNotEmpty) {
-        return files.first.id;
-      }
-
-      // Create a folder
-      ga.File folder = ga.File();
-      folder.name = folderName;
-      folder.mimeType = mimeType;
-      final folderCreation = await driveApi.files.create(folder);
-      debugPrint("Folder ID: ${folderCreation.id}");
-
-      return folderCreation.id;
+      // Save for future use
+      await storage.saveCredentials(client.credentials);
+      return client;
     } catch (e) {
-      debugPrint('$e');
+      debugPrint("Authentication Error: $e");
       return null;
     }
   }
 
-  uploadFileToGoogleDrive(File file) async {
-    var client = await getHttpClient();
-    var drive = ga.DriveApi(client);
-    String? folderId =  await _getFolderId(drive);
-    if(folderId == null){
-      debugPrint("Sign-in first Error");
-    }else {
+  /// Uploads a file to a specific "KeyTitanBackup" folder
+  Future<void> uploadFileToGoogleDrive(File file) async {
+    final client = await getHttpClient();
+    if (client == null) return;
+
+    var driveApi = ga.DriveApi(client);
+    String? folderId = await _getOrCreateFolderId(driveApi);
+
+    if (folderId != null) {
       ga.File fileToUpload = ga.File();
       fileToUpload.parents = [folderId];
-      fileToUpload.name = p.basename(file.absolute.path);
-      var response = await drive.files.create(
+      fileToUpload.name = p.basename(file.path);
+
+      var response = await driveApi.files.create(
         fileToUpload,
         uploadMedia: ga.Media(file.openRead(), file.lengthSync()),
       );
-      debugPrint('$response');
+      debugPrint("File uploaded successfully: ${response.id}");
     }
+  }
 
+  /// Finds or creates the backup folder
+  Future<String?> _getOrCreateFolderId(ga.DriveApi driveApi) async {
+    const folderName = "KeyTitanBackup";
+    const mimeType = "application/vnd.google-apps.folder";
+
+    try {
+      final found = await driveApi.files.list(
+        q: "name = '$folderName' and mimeType = '$mimeType' and trashed = false",
+        $fields: "files(id, name)",
+      );
+
+      if (found.files != null && found.files!.isNotEmpty) {
+        return found.files!.first.id;
+      }
+
+      // If not found, create it
+      ga.File folder = ga.File()
+        ..name = folderName
+        ..mimeType = mimeType;
+
+      final folderCreation = await driveApi.files.create(folder);
+      return folderCreation.id;
+    } catch (e) {
+      debugPrint("Error finding/creating folder: $e");
+      return null;
+    }
   }
 }

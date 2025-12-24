@@ -2,8 +2,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:sqflite/sqflite.dart';
@@ -96,9 +96,16 @@ class passFile {
       
       _sqlFile = File('$fileName.sqlite');
       await _sqlFile!.writeAsBytes(decrypted);
-      
-      isEncrypted = false;
-      return true;
+      if (await isValidSqliteHeader(_sqlFile!)){
+        isEncrypted = false;
+        return true;
+      }
+      else {
+        isEncrypted = true;
+        _sqlFile!.deleteSync();
+        _sqlFile = null;
+        return false;
+      }
     } catch (e) {
       debugPrint('Decryption failed: $e');
       return false;
@@ -131,6 +138,25 @@ class passFile {
 
   String _derive32ByteKey(String pass) {
     return pass.padRight(32, pass).substring(0, 32);
+  }
+
+  Future<bool> isValidSqliteHeader(File file) async {
+    if (!await file.exists()) return false;
+
+    try {
+      // Open a random access file to read only the first 16 bytes
+      final raf = await file.open(mode: FileMode.read);
+      final headerBytes = await raf.read(16);
+      await raf.close();
+
+      // The standard SQLite 3 magic string
+      const magicString = "SQLite format 3\u0000";
+      final actualString = utf8.decode(headerBytes, allowMalformed: true);
+
+      return actualString == magicString;
+    } catch (e) {
+      return false;
+    }
   }
 
   // --- Database Operations ---

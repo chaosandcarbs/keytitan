@@ -59,9 +59,9 @@ class passFile {
       _sqlFile?.path ?? '$fileName.sqlite',
       version: 1,
       onCreate: (db, version) async {
-        await db.execute('CREATE TABLE category(id INTEGER PRIMARY KEY, category TEXT UNIQUE);');
+        await db.execute('CREATE TABLE IF NOT EXISTS category(id INTEGER PRIMARY KEY, category TEXT UNIQUE);');
         await db.execute('''
-          CREATE TABLE password(
+          CREATE TABLE IF NOT EXISTS password(
             id INTEGER PRIMARY KEY, 
             title TEXT, 
             site TEXT, 
@@ -171,7 +171,7 @@ class passFile {
     final String column = (category is String) ? 'B.category' : 'B.id';
     
     return await db.rawQuery('''
-      SELECT A.*, B.category 
+      SELECT A.id, A.title, COALESCE(A.site, '') as site, A.username, A.password, A.category_id, B.category 
       FROM password A 
       JOIN category B ON A.category_id = B.id 
       WHERE $column = ?

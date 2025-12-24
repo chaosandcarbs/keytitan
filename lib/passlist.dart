@@ -518,10 +518,16 @@ class _CategoryListView extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     IconButton(
-                      icon: const Icon(Icons.link),
                       tooltip: 'Open Site',
-                      color: Colors.blueAccent,
-                      onPressed: () => _launchInBrowser(item['site']),
+                      icon: Icon(
+                        Icons.link, 
+                        color: (item['site'] == null || item['site'].toString().isEmpty) 
+                              ? Colors.grey 
+                              : Colors.blue
+                      ),
+                      onPressed: (item['site'] == null || item['site'].toString().isEmpty)
+                          ? null // Disable the button if no site exists
+                          : () => _launchInBrowser(item['site'].toString()),
                     ),
                     const SizedBox(width: Constants.cardIconSpacing), // spacing
                     IconButton(

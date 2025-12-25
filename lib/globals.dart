@@ -11,7 +11,6 @@ class KeyTitan {
 }
 
 /// Enhanced Enum to store metadata for the Home Screen buttons.
-/// This removes the need for mapping logic inside the UI.
 enum CardInfo {
   newFile(
     label: 'New Password File',
@@ -48,9 +47,12 @@ enum CardInfo {
 /// Global configuration and styling constants
 class Constants {
   // --- Colors ---
-  static const Color appBarColor = Color(0xFF263238); // BlueGrey 900
+  //static const Color appBarColor = Color(0xFF263238); // BlueGrey 900
+  static const Color appBarColor = Color.fromARGB(255, 26, 47, 92); // Custom Dark Blue
   static const Color backColor = Color(0xFF101416);   // Darker background
-  static const Color cardColor = Color(0xFF37474F);   // BlueGrey 800
+  //static const Color cardColor = Color(0xFF37474F);   // BlueGrey 800
+  static const Color cardColor = Color.fromARGB(255, 40, 60, 90);   // Custom Darker Blue
+  static const Color dialogColor = Color.fromARGB(255, 40, 60, 80); // Custom Dialog Blue
   static const Color lightText = Colors.white70;
 
   static final BoxDecoration backgroundDecoration = BoxDecoration(
@@ -64,7 +66,8 @@ class Constants {
 
   static const ColorScheme colorScheme = ColorScheme(
     brightness: Brightness.dark,
-    primary: Colors.blueGrey,
+    //primary: Colors.blueGrey,
+    primary: Color.fromARGB(255, 25, 66, 138),
     onPrimary: Colors.white,
     secondary: Colors.orangeAccent,
     onSecondary: Colors.black,
@@ -79,6 +82,7 @@ class Constants {
   static double cardHeight = 120.0;
   static double cardSepHeight = 20.0;
   static const double cardIconSpacing = 20;
+  static const double footerButtonSize = 32.0;  
   
   // --- Typography ---
   static double titleTextSize = 24.0;
@@ -97,6 +101,11 @@ class Constants {
 /// Standard AppBar used across most screens
 AppBar genTitanAppBar(String title) {
   return AppBar(
+    leading: Image.asset( 
+      ('assets/keytitan_nobkg.png'),
+      fit: BoxFit.contain,
+      alignment: Alignment.centerRight, 
+    ),
     title: Text(
       title,
       style: TextStyle(
@@ -118,7 +127,7 @@ Widget bottomBar(BuildContext context) {
     color: Constants.appBarColor,
     child: const Center(
       child: Text(
-        'KeyTitan | Secure & Local',
+        'KeyTitan | From Chaos And Carbs',
         style: TextStyle(color: Colors.white54, fontSize: 10),
       ),
     ),

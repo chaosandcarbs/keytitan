@@ -227,7 +227,8 @@ class _KeyTitanListState extends State<KeyTitanList> {
       builder: (context) => AlertDialog(
         contentPadding: EdgeInsets.all(10),
         scrollable: true,
-        title: TextFormField(controller: headCon, enabled: false, textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20),),
+        backgroundColor: Constants.dialogColor,
+        title: TextFormField(controller: headCon, enabled: false, textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold, fontSize: 20, color: Constants.lightText),),
         titlePadding: EdgeInsets.all(10),
         insetPadding: EdgeInsets.all(10),
         content: Form(
@@ -322,11 +323,18 @@ class _KeyTitanListState extends State<KeyTitanList> {
                         min: Constants.minPassLength.toDouble(),
                         max: Constants.maxPassLength.toDouble(),
                         divisions: (Constants.maxPassLength-Constants.minPassLength).toInt(),
+                        thumbColor: Colors.white,
+                        activeColor: Constants.lightText,
                       ),
                     ),
                     Padding(
                       padding: const EdgeInsets.symmetric(vertical: 12.0),
                       child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blueGrey,
+                          foregroundColor: Constants.lightText,
+                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
+                        ),
                         onPressed: (){if(_formKey.currentState!.validate()){ 
                           if(edit) {
                             updatePassword();
@@ -376,10 +384,29 @@ class _KeyTitanListState extends State<KeyTitanList> {
               length: categories.length,
               child: Scaffold(
                 appBar: AppBar(
-                  title: Text(widget.title),
+                  leading: Image.asset( 
+                    ('assets/keytitan_nobkg.png'),
+                    fit: BoxFit.contain,
+                    alignment: Alignment.centerRight, 
+                  ),
+                  title: Text(
+                    "Manage Passwords", 
+                    style: TextStyle(
+                      fontSize: Constants.titleTextSize.toDouble(),
+                      fontWeight: FontWeight.w300,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                  centerTitle: true,
+                  elevation: 4,
                   bottom: TabBar(
                     isScrollable: true,
                     tabs: categories.map((c) => Tab(text: c['category'])).toList(),
+                    unselectedLabelColor: Constants.lightText,
+                    labelColor: Colors.white,
+                    labelPadding: const EdgeInsets.symmetric(horizontal: 15.0, vertical: 7.0),
+                    tabAlignment: TabAlignment.center,
+                    
                   ),
                 ),
                 bottomNavigationBar: _buildBottomActionNav(),
@@ -419,19 +446,22 @@ class _KeyTitanListState extends State<KeyTitanList> {
             icon: const Icon(Icons.add), 
             color: Colors.green,
             tooltip: 'Add New Password',
-            onPressed: () => passwordDialog()
+            onPressed: () => passwordDialog(),
+            iconSize: Constants.footerButtonSize,
           ),
           IconButton(
             icon: const Icon(Icons.save), 
             color: Colors.blueAccent,
             tooltip: 'Save & Close',
-            onPressed: saveAndClose
+            onPressed: saveAndClose,
+            iconSize: Constants.footerButtonSize,
           ),
           IconButton(
             icon: const Icon(Icons.logout), 
             color: Colors.redAccent,
             tooltip: 'Close',
-            onPressed: closeWithoutSaving
+            onPressed: closeWithoutSaving,
+            iconSize: Constants.footerButtonSize,
           ),
         ],
       ),

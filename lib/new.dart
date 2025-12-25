@@ -83,29 +83,50 @@ class _KeyTitanNewState extends State<KeyTitanNew> {
         padding: const EdgeInsets.symmetric(horizontal: 24.0),
         child: Form(
           key: _formKey,
-          child: Center(
-            child: SingleChildScrollView(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _buildDirectoryPicker(),
-                  const SizedBox(height: 20),
-                  _buildFileNameField(),
-                  const SizedBox(height: 15),
-                  _buildPasswordField('Password', _passController, true),
-                  const SizedBox(height: 15),
-                  _buildPasswordField('Verify Password', _verifyController, false),
-                  const SizedBox(height: 30),
-                  ElevatedButton(
-                    onPressed: _handleCreateFile,
-                    style: ElevatedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
-                    ),
-                    child: const Text('Create Vault File'),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    // This forces the Column to be at least as tall as the screen
+                    minHeight: constraints.maxHeight,
                   ),
-                ],
-              ),
-            ),
+                  child: IntrinsicHeight( // Helps the Column calculate space correctly
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Spacer(),
+                        _buildDirectoryPicker(),
+                        const SizedBox(height: 20),
+                        _buildFileNameField(),
+                        const SizedBox(height: 15),
+                        _buildPasswordField('Password', _passController, true),
+                        const SizedBox(height: 15),
+                        _buildPasswordField('Verify Password', _verifyController, false),
+                        const SizedBox(height: 30),
+                        ElevatedButton(
+                          onPressed: _handleCreateFile,
+                          style: ElevatedButton.styleFrom(
+                            padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 15),
+                            foregroundColor: Constants.lightText
+                          ),
+                          child: const Text('Create Password File'),
+                        ),
+                        // Now the Spacer knows how much space to fill!
+                        const Spacer(), 
+                        TextButton.icon(
+                          onPressed: () => Navigator.of(context).pop(),
+                          icon: const Icon(Icons.arrow_back, size: 16),
+                          label: const Text('Back to Home'),
+                          style: TextButton.styleFrom(foregroundColor: Colors.white38),
+                        ),
+                        const SizedBox(height: 40),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
           ),
         ),
       ),

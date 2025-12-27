@@ -21,73 +21,106 @@ class KeyTitanSync extends StatefulWidget {
 class _KeyTitanSyncState extends State<KeyTitanSync> {
   bool _isAuthenticating = false;
   bool _isAuthenticated = false;
+  bool _isLoadingDrive = false;
   bool _isUploading = false;
   
   List<File> _localFiles = [];
+  List<drive.File> _driveFiles = []; // For remote files
   final _pathController = TextEditingController();
   final _googleDrive = GoogleDrive();
 
   @override
-  void dispose() {
-    _pathController.dispose();
-    super.dispose();
+  void initState() {
+    super.initState();
+    _checkExistingAuth();
   }
 
-  /// Handles Google OAuth2 Authentication via secstore logic
-  Future<void> _handleAuthentication() async {
-    setState(() => _isAuthenticating = true);
-    try {
-      // Logic from secstore.dart to get an authenticated client
-      final client = await _googleDrive.getHttpClient();
-      if (client != null) {
-        setState(() {
-          _isAuthenticated = true;
-          _isAuthenticating = false;
-        });
-      }
-    } catch (e) {
-      debugPrint('Auth Error: $e');
-      setState(() => _isAuthenticating = false);
-      _showSnackBar('Authentication failed. Please try again.');
+  /// Silently check if we already have credentials stored
+  Future<void> _checkExistingAuth() async {
+    final creds = await _googleDrive.storage.getCredentials();
+    if (creds != null) {
+      setState(() => _isAuthenticated = true);
+      _refreshDriveFiles();
     }
   }
 
-  /// Scans the selected directory for .ktn (KeyTitan) files
+  /// Fetches the current file list from the 'KeyTitanBackup' folder
+  Future<void> _refreshDriveFiles() async {
+    if (!_isAuthenticated) return;
+    setState(() => _isLoadingDrive = true);
+    try {
+      final files = await _googleDrive.listDriveFiles();
+      setState(() {
+        _driveFiles = files;
+        _isLoadingDrive = false;
+      });
+    } catch (e) {
+      debugPrint('List Error: $e');
+      setState(() => _isLoadingDrive = false);
+    }
+  }
+
+  Future<void> _handleAuthentication() async {
+    setState(() => _isAuthenticating = true);
+    final client = await _googleDrive.getHttpClient();
+    if (client != null) {
+      setState(() {
+        _isAuthenticated = true;
+        _isAuthenticating = false;
+      });
+      _refreshDriveFiles();
+    } else {
+      setState(() => _isAuthenticating = false);
+      _showSnackBar('Authentication failed.');
+    }
+  }
+
   Future<void> _pickDirectory() async {
     String? selectedPath = await FilePicker.platform.getDirectoryPath();
-    
     if (selectedPath != null) {
       final dir = Directory(selectedPath);
       final List<FileSystemEntity> entities = await dir.list().toList();
-      
       setState(() {
         _pathController.text = selectedPath;
-        _localFiles = entities
-            .whereType<File>()
-            .where((file) => p.extension(file.path) == '.ktn')
-            .toList();
+        _localFiles = entities.whereType<File>().where((file) {
+          final ext = p.extension(file.path).toLowerCase();
+          return ext == '.ktn' || ext == '.pass';
+        }).toList();
       });
     }
   }
 
-  /// Uploads the discovered files to the 'KeyTitanBackup' folder in Drive
   Future<void> _handleUpload() async {
-    if (_localFiles.isEmpty) {
-      _showSnackBar('No vault files found to upload.');
-      return;
-    }
-
     setState(() => _isUploading = true);
     try {
       for (var file in _localFiles) {
         await _googleDrive.uploadFileToGoogleDrive(file);
       }
-      _showSnackBar('Successfully backed up ${_localFiles.length} files!');
+      _showSnackBar('Backup complete!');
+      _refreshDriveFiles(); // Refresh cloud list after upload
     } catch (e) {
-      debugPrint('Upload Error: $e');
-      _showSnackBar('Upload failed. Check your connection.');
+      _showSnackBar('Upload failed.');
     } finally {
       setState(() => _isUploading = false);
+    }
+  }
+
+  Future<void> _handleDownload(drive.File driveFile) async {
+    if (_pathController.text.isEmpty) {
+      _showSnackBar('Please select a local directory first (Step 2).');
+      return;
+    }
+    
+    _showSnackBar('Downloading ${driveFile.name}...');
+    final result = await _googleDrive.downloadFileFromDrive(
+      driveFile.id!, 
+      driveFile.name!, 
+      _pathController.text
+    );
+
+    if (result != null) {
+      _showSnackBar('Downloaded to local folder.');
+      _pickDirectory(); // Refresh local list to show the new file
     }
   }
 
@@ -98,65 +131,76 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: genTitanAppBar(widget.title),
-      backgroundColor: Constants.backColor,
-      bottomSheet: bottomBar(context),
-      body: Container(
+      appBar: AppBar(title: Text(widget.title)),
+      backgroundColor: Colors.black, // Matching your KeyTitan theme
+      body: SingleChildScrollView(
         padding: const EdgeInsets.all(24.0),
-        decoration: Constants.backgroundDecoration,
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _buildStepCard(
               step: "1",
               title: "Authenticate",
               child: _isAuthenticating 
-                ? const Center(child: CircularProgressIndicator())
+                ? const CircularProgressIndicator()
                 : ElevatedButton.icon(
                     onPressed: _isAuthenticated ? null : _handleAuthentication,
                     icon: Icon(_isAuthenticated ? Icons.check_circle : Icons.login),
-                    label: Text(_isAuthenticated ? "Authenticated" : "Sign in to Google"),
+                    label: Text(_isAuthenticated ? "Logged into Drive" : "Connect Google Drive"),
                   ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 15),
             _buildStepCard(
               step: "2",
-              title: "Select Local Vaults",
+              title: "Local Sync Folder",
               child: Column(
                 children: [
                   TextField(
                     controller: _pathController,
                     readOnly: true,
-                    style: const TextStyle(color: Colors.white70, fontSize: 12),
                     decoration: InputDecoration(
-                      hintText: "No directory selected",
-                      suffixIcon: IconButton(
-                        icon: const Icon(Icons.folder_open),
-                        onPressed: _pickDirectory,
-                      ),
+                      hintText: "Pick directory",
+                      suffixIcon: IconButton(icon: const Icon(Icons.folder), onPressed: _pickDirectory),
                     ),
                   ),
                   if (_localFiles.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 10),
-                      child: Text("${_localFiles.length} vault(s) found", 
-                        style: const TextStyle(color: Colors.greenAccent)),
+                    ListView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      itemCount: _localFiles.length,
+                      itemBuilder: (ctx, i) => ListTile(
+                        leading: const Icon(Icons.insert_drive_file, color: Colors.blueAccent),
+                        title: Text(p.basename(_localFiles[i].path), style: const TextStyle(fontSize: 12)),
+                      ),
                     ),
                 ],
               ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 15),
             _buildStepCard(
               step: "3",
-              title: "Cloud Backup",
-              child: _isUploading
-                ? const Center(child: CircularProgressIndicator())
-                : ElevatedButton.icon(
+              title: "Cloud Backup & Restore",
+              child: Column(
+                children: [
+                  ElevatedButton.icon(
                     onPressed: (_isAuthenticated && _localFiles.isNotEmpty) ? _handleUpload : null,
-                    icon: const Icon(Icons.cloud_upload),
-                    label: const Text("Upload to Drive"),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey.shade800),
+                    icon: _isUploading ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2)) : const Icon(Icons.cloud_upload),
+                    label: const Text("Upload All to Cloud"),
                   ),
+                  const Divider(height: 30),
+                  const Text("FILES IN GOOGLE DRIVE", style: TextStyle(fontSize: 10, color: Colors.white54)),
+                  if (_isLoadingDrive) const CircularProgressIndicator(),
+                  if (!_isLoadingDrive && _driveFiles.isEmpty) const Text("No backups found on Drive", style: TextStyle(color: Colors.white24)),
+                  ..._driveFiles.map((df) => ListTile(
+                    dense: true,
+                    title: Text(df.name ?? "Unknown", style: const TextStyle(color: Colors.white)),
+                    subtitle: Text("${df.size ?? '0'} bytes"),
+                    trailing: IconButton(
+                      icon: const Icon(Icons.download, color: Colors.greenAccent),
+                      onPressed: () => _handleDownload(df),
+                    ),
+                  )),
+                ],
+              ),
             ),
           ],
         ),
@@ -166,16 +210,14 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
 
   Widget _buildStepCard({required String step, required String title, required Widget child}) {
     return Card(
-      color: Constants.cardColor,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      color: const Color(0xFF1A1A1A),
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text("STEP $step: $title", 
-              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white54, fontSize: 12)),
-            const SizedBox(height: 12),
+            Text("STEP $step: $title", style: const TextStyle(fontSize: 11, color: Colors.blue)),
+            const SizedBox(height: 10),
             child,
           ],
         ),

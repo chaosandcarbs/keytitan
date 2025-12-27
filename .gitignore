@@ -17,7 +17,7 @@ migrate_working_dir/
 !packages/flutter_tools/test/widget_preview_scaffold.shard/widget_preview_scaffold/pubspec.lock
 
 # ignore env files
-keytitan.env
+.env
 
 # IntelliJ related
 *.iml

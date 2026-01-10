@@ -1,10 +1,11 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="app.keytitan">
     <application
-        android:label="keytitan"
+        android:label="KeyTitan"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true"  >
         <activity
-            android:name=".MainActivity"
+            android:name="app.keytitan.MainActivity"    
             android:exported="true"
             android:launchMode="singleTop"
             android:taskAffinity=""

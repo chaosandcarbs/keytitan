@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'package:window_manager/window_manager.dart';
 import 'globals.dart';
 import 'passwords.dart';
 
@@ -17,7 +18,7 @@ class KeyTitanList extends StatefulWidget {
   State<KeyTitanList> createState() => _KeyTitanListState();
 }
 
-class _KeyTitanListState extends State<KeyTitanList> {
+class _KeyTitanListState extends State<KeyTitanList> with WindowListener{
   final headCon = TextEditingController();
   final idCon = TextEditingController();
   final titleCon = TextEditingController();
@@ -32,7 +33,14 @@ class _KeyTitanListState extends State<KeyTitanList> {
   bool _initialized = false;
 
   @override
+  void initState() {
+    super.initState();
+    windowManager.addListener(this); // Start listening for "X" click
+  }
+
+  @override
   void dispose() {
+    windowManager.removeListener(this);
     headCon.dispose();
     idCon.dispose();
     titleCon.dispose();
@@ -42,10 +50,32 @@ class _KeyTitanListState extends State<KeyTitanList> {
     passCon.dispose();
     complexityCon.dispose();
     _refreshTrigger.dispose();
+    if (pFile != null) {
+      pFile!.dispose();
+    }
     super.dispose();
   }
 
-@override
+  @override
+  void onWindowClose() async {
+    // This triggers when the user clicks the "X" button
+    if (pFile != null) {
+      debugPrint('Intercepted "X" click. Cleaning up temporary files...');
+      
+      // Auto-save and encrypt if you want to prevent data loss, 
+      // or just dispose if you want to ensure the plain-text file is gone.
+      try {
+        await pFile!.dispose(); // This deletes the .sqlite file
+      } catch (e) {
+        debugPrint('Emergency cleanup error: $e');
+      }
+    }
+    
+    // Finally, allow the application to actually close
+    await windowManager.destroy();
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (!_initialized) {
@@ -152,18 +182,25 @@ class _KeyTitanListState extends State<KeyTitanList> {
 
   Future<void> saveAndClose() async {
     try {
+      Clipboard.setData(const ClipboardData(text: ''));
       await pFile!.attemptEncrypt();
       await pFile!.dispose(); // Delete temp sqlite file
     } catch (e) {
       debugPrint(e.toString());
     }
-    Navigator.of(context).pop();
+    if (mounted) {
+      // Use the navigatorKey passed from main or standard Navigator
+      widget.navigatorKey.currentState!.pushNamedAndRemoveUntil(KeyTitan.home, (route) => false);
+    }
   }
 
   void closeWithoutSaving() {
     Clipboard.setData(const ClipboardData(text: ''));
     pFile!.dispose();
-    Navigator.of(context).pop();
+    if (mounted) {
+      // Use the navigatorKey passed from main or standard Navigator
+      widget.navigatorKey.currentState!.pushNamedAndRemoveUntil(KeyTitan.home, (route) => false);
+    } 
   }
 
   // --- UI Dialogs ---
@@ -331,8 +368,8 @@ class _KeyTitanListState extends State<KeyTitanList> {
                       padding: const EdgeInsets.symmetric(vertical: 12.0),
                       child: ElevatedButton(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.blueGrey,
-                          foregroundColor: Constants.lightText,
+                          backgroundColor: Colors.white,
+                          foregroundColor: Constants.cardColor,
                           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 20),
                         ),
                         onPressed: (){if(_formKey.currentState!.validate()){ 
@@ -365,75 +402,87 @@ class _KeyTitanListState extends State<KeyTitanList> {
         body: Center(child: CircularProgressIndicator()),
       );
     }
-    return ValueListenableBuilder(
-      valueListenable: _refreshTrigger,
-      builder: (context, _, __) {
-        return FutureBuilder<List<Map<String, dynamic>>>(
-          future: pFile!.getCategories(),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Scaffold(body: Center(child: CircularProgressIndicator()));
-            }
 
-            final categories = snapshot.data ?? [];
-            if (categories.isEmpty) {
-              return _buildEmptyState();
-            }
+    //return a popscope, to handle the back/close actions on mobile
+  return PopScope(
+    canPop: false, // Prevent accidental exit
+    onPopInvokedWithResult: (didPop, result) async {
+      if (didPop) return;
+      
+      // Run your cleanup logic
+      closeWithoutSaving(); 
+    },
+    child: ValueListenableBuilder(
+    //return ValueListenableBuilder(
+        valueListenable: _refreshTrigger,
+        builder: (context, _, __) {
+          return FutureBuilder<List<Map<String, dynamic>>>(
+            future: pFile!.getCategories(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Scaffold(body: Center(child: CircularProgressIndicator()));
+              }
 
-            return DefaultTabController(
-              length: categories.length,
-              child: Scaffold(
-                appBar: AppBar(
-                  leading: Image.asset( 
-                    ('assets/keytitan_nobkg.png'),
-                    fit: BoxFit.contain,
-                    alignment: Alignment.centerRight, 
-                  ),
-                  title: Text(
-                    "Manage Passwords", 
-                    style: TextStyle(
-                      fontSize: Constants.titleTextSize.toDouble(),
-                      fontWeight: FontWeight.w300,
-                      letterSpacing: 1.2,
+              final categories = snapshot.data ?? [];
+              if (categories.isEmpty) {
+                return _buildEmptyState();
+              }
+
+              return DefaultTabController(
+                length: categories.length,
+                child: Scaffold(
+                  appBar: AppBar(
+                    leading: Image.asset( 
+                      ('assets/keytitan_nobkg.png'),
+                      fit: BoxFit.contain,
+                      alignment: Alignment.centerRight, 
+                    ),
+                    title: Text(
+                      "Manage Passwords", 
+                      style: TextStyle(
+                        fontSize: Constants.titleTextSize.toDouble(),
+                        fontWeight: FontWeight.w300,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
+                    centerTitle: true,
+                    elevation: 4,
+                    bottom: TabBar(
+                      isScrollable: true,
+                      tabs: categories.map((c) => Tab(text: c['category'])).toList(),
+                      unselectedLabelColor: Constants.lightText,
+                      labelColor: Colors.white,
+                      labelPadding: const EdgeInsets.symmetric(horizontal: 15.0, vertical: 7.0),
+                      tabAlignment: TabAlignment.center,
+                      
                     ),
                   ),
-                  centerTitle: true,
-                  elevation: 4,
-                  bottom: TabBar(
-                    isScrollable: true,
-                    tabs: categories.map((c) => Tab(text: c['category'])).toList(),
-                    unselectedLabelColor: Constants.lightText,
-                    labelColor: Colors.white,
-                    labelPadding: const EdgeInsets.symmetric(horizontal: 15.0, vertical: 7.0),
-                    tabAlignment: TabAlignment.center,
-                    
+                  bottomNavigationBar: _buildBottomActionNav(),
+                  body: TabBarView(
+                    children: categories.map((cat) {
+                      return _CategoryListView(
+                        category: cat['category'],
+                        pFile: pFile!,
+                        masterPassword: pFile!.password, // Pass seed for decryption
+                        onEdit: (data, decryptedPass) {
+                          idCon.text = data['id'].toString();
+                          titleCon.text = data['title'];
+                          siteCon.text = data['site'] ?? '';
+                          catCon.text = cat['category'];
+                          userCon.text = data['username'] ?? '';
+                          passCon.text = decryptedPass;
+                          passwordDialog(edit: true);
+                        },
+                        onDelete: (title, id) => deletePasswordDialog(title, id),
+                      );
+                    }).toList(),
                   ),
                 ),
-                bottomNavigationBar: _buildBottomActionNav(),
-                body: TabBarView(
-                  children: categories.map((cat) {
-                    return _CategoryListView(
-                      category: cat['category'],
-                      pFile: pFile!,
-                      masterPassword: pFile!.password, // Pass seed for decryption
-                      onEdit: (data, decryptedPass) {
-                        idCon.text = data['id'].toString();
-                        titleCon.text = data['title'];
-                        siteCon.text = data['site'] ?? '';
-                        catCon.text = cat['category'];
-                        userCon.text = data['username'] ?? '';
-                        passCon.text = decryptedPass;
-                        passwordDialog(edit: true);
-                      },
-                      onDelete: (title, id) => deletePasswordDialog(title, id),
-                    );
-                  }).toList(),
-                ),
-              ),
-            );
-          },
-        );
-      },
+              );
+            },
+          );
+        },
+      )
     );
   }
 
@@ -529,68 +578,97 @@ class _CategoryListView extends StatelessWidget {
         final passwords = snapshot.data!;
         
         return Container(
-        width: double.infinity,
-        decoration: Constants.backgroundDecoration,
-        padding: const EdgeInsets.all(24.0),
-        child: ListView.builder(
-          itemCount: passwords.length,
-          itemBuilder: (context, index) {
-            final item = passwords[index];
-            // Decrypt the password for the UI
-            final decrypted = keyTitanPass.hdecrypt(masterPassword, item['password']);
+          width: double.infinity,
+          decoration: Constants.backgroundDecoration,
+          child: ListView.builder(
+            padding: const EdgeInsets.all(12.0),
+            itemCount: passwords.length,
+            itemBuilder: (context, index) {
+              final item = passwords[index];
+              final decrypted = keyTitanPass.hdecrypt(masterPassword, item['password']);
 
-            return Card(
-              margin: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-              child: ListTile(
-                title: Text(item['title']),
-                subtitle: Text((item['username'] ?? '')),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
+              return Card(
+                margin: const EdgeInsets.only(bottom: 12),
+                clipBehavior: Clip.antiAlias, // Ensures background colors don't bleed
+                child: Column(
                   children: [
-                    IconButton(
-                      tooltip: 'Open Site',
-                      icon: Icon(
-                        Icons.link, 
-                        color: (item['site'] == null || item['site'].toString().isEmpty) 
-                              ? Colors.grey 
-                              : Colors.blue
+                    Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  item['title'],
+                                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  item['username'] ?? '',
+                                  style: TextStyle(color: Constants.lightText),
+                                ),
+                              ],
+                            ),
+                          ),
+                          // On Desktop, show icons on the side. On Mobile, we hide them here.
+                          if (!Constants.isMobile) _buildActionRow(context, item, decrypted),
+                        ],
                       ),
-                      onPressed: (item['site'] == null || item['site'].toString().isEmpty)
-                          ? null // Disable the button if no site exists
-                          : () => _launchInBrowser(item['site'].toString()),
                     ),
-                    const SizedBox(width: Constants.cardIconSpacing), // spacing
-                    IconButton(
-                      icon: const Icon(Icons.copy),
-                      tooltip: 'Copy Password',
-                      onPressed: () {
-                        Clipboard.setData(ClipboardData(text: decrypted));
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Password copied to clipboard'))
-                        );
-                      },
-                    ),
-                    const SizedBox(width: Constants.cardIconSpacing), // spacing
-                    IconButton(
-                      icon: const Icon(Icons.edit),
-                      tooltip: 'Edit Entry',
-                      color: Colors.orangeAccent,
-                      onPressed: () => onEdit(item, decrypted),
-                    ),
-                    const SizedBox(width: Constants.cardIconSpacing), // spacing
-                    IconButton(
-                      icon: const Icon(Icons.delete, color: Colors.red),
-                      tooltip: 'Delete Entry',
-                      onPressed: () => onDelete(item['title'], item['id']),
-                    ),
+                    // On Mobile, show icons in a dedicated "Toolbar" at the bottom of the card
+                    if (Constants.isMobile)
+                      Container(
+                        color: Colors.black12,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        child: _buildActionRow(context, item, decrypted, expanded: true),
+                      ),
                   ],
                 ),
-              ),
-            );
-          },
-        )
+              );
+            },
+          ),
         );
       },
+    );
+  }
+
+  Widget _buildActionRow(BuildContext context, Map<String, dynamic> item, String decrypted, {bool expanded = false}) {
+    final List<Widget> actions = [
+      IconButton(
+        tooltip: 'Open Site',
+        icon: Icon(Icons.link, color: (item['site']?.toString().isEmpty ?? true) ? Colors.grey : Colors.blue),
+        onPressed: (item['site']?.toString().isEmpty ?? true) ? null : () => _launchInBrowser(item['site'].toString()),
+        iconSize: Constants.cardIconSize,
+      ),
+      IconButton(
+        icon: const Icon(Icons.copy),
+        tooltip: 'Copy Password',
+        onPressed: () {
+          Clipboard.setData(ClipboardData(text: decrypted));
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password copied to clipboard')));
+        },
+        iconSize: Constants.cardIconSize,
+      ),
+      IconButton(
+        icon: const Icon(Icons.edit, color: Colors.orangeAccent),
+        tooltip: 'Edit Entry',
+        onPressed: () => onEdit(item, decrypted),
+        iconSize: Constants.cardIconSize,
+      ),
+      IconButton(
+        icon: const Icon(Icons.delete, color: Colors.red),
+        tooltip: 'Delete Entry',
+        onPressed: () => onDelete(item['title'], item['id']),
+        iconSize: Constants.cardIconSize,
+      ),
+    ];
+
+    return Row(
+      mainAxisAlignment: expanded ? MainAxisAlignment.spaceAround : MainAxisAlignment.end,
+      mainAxisSize: expanded ? MainAxisSize.max : MainAxisSize.min,
+      children: actions,
     );
   }
 }

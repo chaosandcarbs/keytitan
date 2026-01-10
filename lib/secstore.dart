@@ -31,6 +31,10 @@ class SecureStorage {
     await _storage.write(key: _key, value: jsonEncode(data));
   }
 
+  Future<void> clearCredentials() async {
+    await _storage.delete(key: _key);
+  }
+
   Future<AccessCredentials?> getCredentials() async {
     final jsonString = await _storage.read(key: _key);
     if (jsonString == null) return null;
@@ -115,7 +119,7 @@ class GoogleDrive {
     return response.files ?? [];
   }
 
-  /// 2. UPLOAD: Local file -> Google Drive
+  /// will use a POST to upload a file; creating duplicates if the same exists
   Future<void> uploadFileToGoogleDrive(File file) async {
     final client = await getHttpClient();
     if (client == null) return;
@@ -142,7 +146,90 @@ class GoogleDrive {
     }
   }
 
-  /// 3. DOWNLOAD: Google Drive -> Local storage path
+  //should check for file ID first, to replace existing file
+  Future<void> uploadFileToDrive(File localFile) async {
+    final client = await getHttpClient();
+    if (client == null) return;
+
+    var driveApi = ga.DriveApi(client);
+    String? folderId = await _getOrCreateFolderId(driveApi);
+
+    // 1. Check if the file already exists in that folder
+    final fileName = p.basename(localFile.path);
+    final existingFiles = await driveApi.files.list(
+      q: "name = '$fileName' and '$folderId' in parents and trashed = false",
+      $fields: "files(id, name)",
+    );
+
+    ga.File driveFile = ga.File();
+    driveFile.name = fileName;
+
+    final media = ga.Media(localFile.openRead(), localFile.lengthSync());
+
+    if (existingFiles.files != null && existingFiles.files!.isNotEmpty) {
+      // 2. OVERWRITE: File exists, use 'update'
+      final fileId = existingFiles.files!.first.id!;
+      debugPrint("File exists. Overwriting File ID: $fileId");
+      
+      await driveApi.files.update(
+        driveFile,
+        fileId,
+        uploadMedia: media,
+      );
+    } else {
+      // 3. CREATE NEW: File doesn't exist, use 'create'
+      debugPrint("File does not exist. Creating new file.");
+      driveFile.parents = [folderId!];
+      
+      await driveApi.files.create(
+        driveFile,
+        uploadMedia: media,
+      );
+    }
+  }
+
+Future<File?> downloadFileFromDrive(String fileId, String fileName, String localDirPath) async {
+    final client = await getHttpClient();
+    if (client == null) return null;
+
+    var driveApi = ga.DriveApi(client);
+    
+    // Retrieve the file content as a stream
+    ga.Media media = await driveApi.files.get(
+      fileId, 
+      downloadOptions: ga.DownloadOptions.fullMedia
+    ) as ga.Media;
+    
+    final savePath = p.join(localDirPath, fileName);
+    final file = File(savePath);
+
+    // --- NEW: Handle local overwrite ---
+    if (await file.exists()) {
+      debugPrint("Local file $fileName already exists. Replacing...");
+      try {
+        await file.delete(); // Delete the old version to ensure a clean overwrite
+      } catch (e) {
+        debugPrint("Error removing old local file: $e");
+        // If delete fails (file locked?), we can still try to overwrite via openWrite
+      }
+    }
+
+    // Write stream to file
+    final IOSink sink = file.openWrite();
+    try {
+      await sink.addStream(media.stream);
+      debugPrint("File downloaded and replaced locally: $savePath");
+    } catch (e) {
+      debugPrint("Download stream error: $e");
+      return null;
+    } finally {
+      await sink.close();
+    }
+
+    return file;
+  }
+
+ /* /// download file
   Future<File?> downloadFileFromDrive(String fileId, String fileName, String localDirPath) async {
     final client = await getHttpClient();
     if (client == null) return null;
@@ -166,6 +253,7 @@ class GoogleDrive {
     debugPrint("File downloaded locally to: $savePath");
     return file;
   }
+*/
 
   Future<String?> _getOrCreateFolderId(ga.DriveApi driveApi) async {
     const folderName = "KeyTitanBackup";

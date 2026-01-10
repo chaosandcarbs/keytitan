@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'dart:io';
 
 /// Centralized Route Names to prevent typos across the app
 class KeyTitan {
@@ -55,6 +56,10 @@ class Constants {
   static const Color dialogColor = Color.fromARGB(255, 40, 60, 80); // Custom Dialog Blue
   static const Color lightText = Colors.white70;
 
+  // OS specific
+  static bool get isMobile => Platform.isAndroid || Platform.isIOS;
+  static double actionRowHeight = 48.0;
+
   static final BoxDecoration backgroundDecoration = BoxDecoration(
     color: backColor,
     image: DecorationImage(
@@ -81,8 +86,9 @@ class Constants {
   // These are updated dynamically in main.dart based on platform
   static double cardHeight = 120.0;
   static double cardSepHeight = 20.0;
-  static const double cardIconSpacing = 20;
+  static double cardIconSpacing = 20;
   static const double footerButtonSize = 32.0;  
+  static double cardIconSize = 24.0;
   
   // --- Typography ---
   static double titleTextSize = 24.0;

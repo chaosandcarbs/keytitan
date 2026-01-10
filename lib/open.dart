@@ -89,11 +89,17 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
           decoration: const InputDecoration(hintText: "Enter File Password"),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          TextButton(
+            onPressed: () => Navigator.pop(context), 
+            child: const Text('Cancel', style: TextStyle(color: Constants.lightText),)
+          ),
           TextButton(
             onPressed: () => Navigator.pop(context, _passController.text),
             style: TextButton.styleFrom(
-              foregroundColor: Constants.lightText,
+              foregroundColor: Constants.cardColor,
+              padding: EdgeInsets.all(16),
+              elevation: 4.0,
+              backgroundColor: Colors.white
             ),
             child: const Text('Unlock'),
           ),

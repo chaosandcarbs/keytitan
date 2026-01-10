@@ -1,4 +1,4 @@
-package com.example.keytitan
+package app.keytitan
 
 import io.flutter.embedding.android.FlutterActivity
 

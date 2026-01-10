@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:window_size/window_size.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqflite/sqflite.dart';
+import 'package:window_manager/window_manager.dart';
 
 // Local imports
 import 'new.dart';
@@ -18,17 +19,37 @@ void main() {
     _initializeDesktopEnvironment();
     databaseFactory = databaseFactoryFfi;
   }
+  if (Platform.isAndroid) {
+    _initializeAndroidEnvironment();
+    databaseFactory = databaseFactoryFfi;
+  }
 
   runApp(const KeyTitanApp());
 }
 
 /// Sets up window constraints and database drivers for Desktop platforms
-void _initializeDesktopEnvironment() {
+void _initializeDesktopEnvironment() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await windowManager.ensureInitialized();
+
+  WindowOptions windowOptions = const WindowOptions(
+    size: Size(550, 950),
+    center: true,
+    title: "KeyTitan Password Manager",
+    skipTaskbar: false,
+    titleBarStyle: TitleBarStyle.normal,
+  );
+
+  windowManager.waitUntilReadyToShow(windowOptions, () async {
+    await windowManager.show();
+    await windowManager.focus();
+    // Prevent the window from closing immediately so we can cleanup
+    await windowManager.setPreventClose(true);
+  });
+
   sqfliteFfiInit();
 
-  setWindowMaxSize(const Size(824, 1524));
-  setWindowMinSize(const Size(393, 873));
+  await windowManager.setPreventClose(true);
   
   // Center the window on the screen after a brief delay to ensure engine readiness
   Future.delayed(const Duration(milliseconds: 500), () {
@@ -41,6 +62,18 @@ void _initializeDesktopEnvironment() {
   Constants.titleTextSize = 26;
   Constants.menuTextSize = 16;
 }
+
+void _initializeAndroidEnvironment() {
+  WidgetsFlutterBinding.ensureInitialized();
+  sqfliteFfiInit();
+  Constants.menuTextSize = 15.0;
+  Constants.titleTextSize = 20.0;
+  Constants.cardSepHeight = 30;
+  Constants.cardHeight = 160;
+  Constants.cardIconSpacing = 10.0;
+  Constants.cardIconSize = 16.0;
+}
+
 
 class KeyTitanApp extends StatelessWidget {
   const KeyTitanApp({super.key});

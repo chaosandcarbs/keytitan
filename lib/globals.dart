@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
 
-/// Centralized Route Names to prevent typos across the app
+// Named route constants — centralised here to avoid string literals scattered
+// across the codebase.
 class KeyTitan {
   static const String home = '/';
   static const String newFile = '/new';
@@ -11,7 +12,9 @@ class KeyTitan {
   static const String exit = '/exit';
 }
 
-/// Enhanced Enum to store metadata for the Home Screen buttons.
+// Metadata for the home-screen menu cards. Adding a new card only requires
+// a new enum value here — the build method in main.dart iterates the list
+// automatically.
 enum CardInfo {
   newFile(
     label: 'New Password File',
@@ -45,19 +48,19 @@ enum CardInfo {
   });
 }
 
-/// Global configuration and styling constants
+// App-wide style constants. Layout values (cardHeight etc.) are mutable
+// because main.dart adjusts them per-platform after the first frame.
 class Constants {
-  // --- Colors ---
-  //static const Color appBarColor = Color(0xFF263238); // BlueGrey 900
-  static const Color appBarColor = Color.fromARGB(255, 26, 47, 92); // Custom Dark Blue
-  static const Color backColor = Color(0xFF101416);   // Darker background
-  //static const Color cardColor = Color(0xFF37474F);   // BlueGrey 800
-  static const Color cardColor = Color.fromARGB(255, 40, 60, 90);   // Custom Darker Blue
-  static const Color dialogColor = Color.fromARGB(255, 40, 60, 80); // Custom Dialog Blue
+  // --- Colours ---
+  static const Color appBarColor = Color.fromARGB(255, 26, 47, 92);
+  static const Color backColor = Color(0xFF101416);
+  static const Color cardColor = Color.fromARGB(255, 40, 60, 90);
+  static const Color dialogColor = Color.fromARGB(255, 40, 60, 80);
   static const Color lightText = Colors.white70;
 
-  // OS specific
+  // True when running on a touch-first device.
   static bool get isMobile => Platform.isAndroid || Platform.isIOS;
+
   static double actionRowHeight = 48.0;
 
   static final BoxDecoration backgroundDecoration = BoxDecoration(
@@ -71,7 +74,6 @@ class Constants {
 
   static const ColorScheme colorScheme = ColorScheme(
     brightness: Brightness.dark,
-    //primary: Colors.blueGrey,
     primary: Color.fromARGB(255, 25, 66, 138),
     onPrimary: Colors.white,
     secondary: Colors.orangeAccent,
@@ -82,35 +84,30 @@ class Constants {
     onSurface: Colors.white,
   );
 
-  // --- Layout & Spacing ---
-  // These are updated dynamically in main.dart based on platform
+  // --- Layout & spacing (set per-platform in main.dart) ---
   static double cardHeight = 120.0;
   static double cardSepHeight = 20.0;
-  static double cardIconSpacing = 20;
-  static const double footerButtonSize = 32.0;  
+  static double cardIconSpacing = 20.0;
   static double cardIconSize = 24.0;
-  
+  static const double footerButtonSize = 32.0;
+
   // --- Typography ---
   static double titleTextSize = 24.0;
   static double menuTextSize = 12.0;
 
-  // --- Password Constants ---
+  // --- Password generation bounds ---
   static const int defaultPassLength = 15;
   static const int maxPassLength = 32;
   static const int minPassLength = 7;
-
-
-// --- Global UI Components ---
-
 }
 
-/// Standard AppBar used across most screens
+// Standard AppBar used on most screens.
 AppBar genTitanAppBar(String title) {
   return AppBar(
-    leading: Image.asset( 
-      ('assets/keytitan_nobkg.png'),
+    leading: Image.asset(
+      'assets/keytitan_nobkg.png',
       fit: BoxFit.contain,
-      alignment: Alignment.centerRight, 
+      alignment: Alignment.centerRight,
     ),
     title: Text(
       title,
@@ -125,7 +122,7 @@ AppBar genTitanAppBar(String title) {
   );
 }
 
-/// Standard Bottom Bar for context/branding
+// Thin branding strip shown at the bottom of entry screens.
 Widget bottomBar(BuildContext context) {
   return Container(
     height: 30,
@@ -140,58 +137,47 @@ Widget bottomBar(BuildContext context) {
   );
 }
 
+// Password-character-set presets. The integer value is stored in the DB
+// so existing entries remain readable if new levels are added in future.
 enum Complexity {
   alpha(text: 'Alphanumeric [A-Za-z0-9]', value: 0),
   basic(text: 'Basic [A-Za-z0-9!#&\$]', value: 1),
   full(text: 'Full; [A-Za-z0-9()[]!#&\$+-,.]', value: 2),
   luda(text: 'Ludicrous Mode', value: 3);
-  
+
   final int value;
   final String text;
 
+  const Complexity({required this.value, required this.text});
+
   String get alphabet => getAlphabet();
-  
+
   String getAlphabet() {
-    switch(value){
-        case 0: //alphanumeric [A-Za-z0-9]
-          return 'abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-        case 1: //Basic; [A-Za-z0-9!#&$]
-          return 'abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#&\$';
-        case 2: //Full; [A-Za-z0-9()[]!#&$+-,.]
-          return 'abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789()[]!#&\$+-,.';
-        case 3: //Ludicrous; all ASCII characters
-          return 'abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!"#\$%@^&*()+,.-/\':;<>=?\\[]_`{}|~';
-        default: // assume basic
-          return 'abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#&\$';
+    switch (value) {
+      case 0:
+        return 'abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      case 1:
+        return 'abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#&\$';
+      case 2:
+        return 'abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789()[]!#&\$+-,.';
+      case 3:
+        return 'abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!"#\$%@^&*()+,.-/\':;<>=?\\[]_`{}|~';
+      default:
+        return 'abcdefghijklmnopqrstuvwxzyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!#&\$';
     }
   }
 
-  static Complexity getComplexity(String input) {
-    if (input == Complexity.alpha.text){
-      return Complexity.alpha;
-    }
-    else if (input == Complexity.basic.text){
-      return Complexity.basic;
-    }
-    else if (input == Complexity.full.text){
-      return Complexity.full;
-    }
-    else if (input == Complexity.luda.text){
-      return Complexity.luda;
-    }  
-    else {
-      return Complexity.basic;
-    }          
+  // Maps the display text back to its enum value (used by the complexity
+  // drop-down in the password dialog).
+  static Complexity getComplexity(String displayText) {
+    return Complexity.values.firstWhere(
+      (c) => c.text == displayText,
+      orElse: () => Complexity.basic,
+    );
   }
-
-  const Complexity({
-    required this.value,
-    required this.text,
-  });
 }
 
-
-/// Reusable Styled Button to maintain UI consistency
+// Reusable styled button that keeps the UI consistent across screens.
 class TitanButton extends StatelessWidget {
   final String label;
   final VoidCallback onPressed;
@@ -212,8 +198,10 @@ class TitanButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final textStyle = TextStyle(color: Constants.lightText, fontSize: Constants.menuTextSize);
-    
+    final textStyle = TextStyle(
+      color: Constants.lightText,
+      fontSize: Constants.menuTextSize,
+    );
     final buttonStyle = ElevatedButton.styleFrom(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28.0)),
       fixedSize: Size(width ?? double.maxFinite, height),
@@ -223,7 +211,8 @@ class TitanButton extends StatelessWidget {
     if (icon != null) {
       return ElevatedButton.icon(
         onPressed: onPressed,
-        icon: Icon(icon, color: Constants.lightText, size: Constants.menuTextSize+6),
+        icon: Icon(icon,
+            color: Constants.lightText, size: Constants.menuTextSize + 6),
         label: Text(label, style: textStyle),
         style: buttonStyle,
       );

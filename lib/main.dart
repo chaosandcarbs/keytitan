@@ -3,10 +3,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:window_size/window_size.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
-import 'package:sqflite/sqflite.dart';
 import 'package:window_manager/window_manager.dart';
 
-// Local imports
 import 'new.dart';
 import 'open.dart';
 import 'drivesync.dart';
@@ -14,28 +12,29 @@ import 'passlist.dart';
 import 'globals.dart';
 
 void main() {
-  // Handle Desktop specific initializations
-  if (Platform.isWindows || Platform.isLinux) {
-    _initializeDesktopEnvironment();
-    databaseFactory = databaseFactoryFfi;
-  }
-  if (Platform.isAndroid) {
-    _initializeAndroidEnvironment();
-    databaseFactory = databaseFactoryFfi;
+  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    _initDesktop();
+  } else if (Platform.isAndroid || Platform.isIOS) {
+    _initMobile();
   }
 
   runApp(const KeyTitanApp());
 }
 
-/// Sets up window constraints and database drivers for Desktop platforms
-void _initializeDesktopEnvironment() async {
+// One-time setup for desktop targets (Windows, Linux, macOS).
+// Configures the window frame, prevents accidental close, and initialises
+// the sqflite FFI layer used for in-memory SQLite.
+void _initDesktop() async {
   WidgetsFlutterBinding.ensureInitialized();
+  sqfliteFfiInit();
+  databaseFactory = databaseFactoryFfi;
+
   await windowManager.ensureInitialized();
 
-  WindowOptions windowOptions = const WindowOptions(
+  const windowOptions = WindowOptions(
     size: Size(550, 950),
     center: true,
-    title: "KeyTitan Password Manager",
+    title: 'KeyTitan Password Manager',
     skipTaskbar: false,
     titleBarStyle: TitleBarStyle.normal,
   );
@@ -43,95 +42,91 @@ void _initializeDesktopEnvironment() async {
   windowManager.waitUntilReadyToShow(windowOptions, () async {
     await windowManager.show();
     await windowManager.focus();
-    // Prevent the window from closing immediately so we can cleanup
     await windowManager.setPreventClose(true);
   });
 
-  sqfliteFfiInit();
-
-  await windowManager.setPreventClose(true);
-  
-  // Center the window on the screen after a brief delay to ensure engine readiness
+  // Centre the window after the engine is fully ready.
   Future.delayed(const Duration(milliseconds: 500), () {
     setWindowFrame(
       Rect.fromCenter(center: const Offset(1000, 500), width: 512, height: 910),
     );
   });
 
-  // Scale UI constants for desktop readability
   Constants.titleTextSize = 26;
   Constants.menuTextSize = 16;
 }
 
-void _initializeAndroidEnvironment() {
+// One-time setup for Android and iOS.
+// sqflite_common_ffi is used on both platforms so that in-memory databases
+// work consistently with the desktop code path.
+void _initMobile() {
   WidgetsFlutterBinding.ensureInitialized();
   sqfliteFfiInit();
-  Constants.menuTextSize = 15.0;
-  Constants.titleTextSize = 20.0;
-  Constants.cardSepHeight = 30;
-  Constants.cardHeight = 160;
+  databaseFactory = databaseFactoryFfi;
+
+  Constants.menuTextSize = 16.0;
+  Constants.titleTextSize = 21.0;
+  Constants.cardSepHeight = 45;
+  Constants.cardHeight = 185;
   Constants.cardIconSpacing = 10.0;
   Constants.cardIconSize = 16.0;
 }
 
-
 class KeyTitanApp extends StatelessWidget {
   const KeyTitanApp({super.key});
 
-  // Global key for navigation without BuildContext if needed
-  static final _mainNavigatorKey = GlobalKey<NavigatorState>();
+  static final _navigatorKey = GlobalKey<NavigatorState>();
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'KeyTitan Password Manager',
-      navigatorKey: _mainNavigatorKey,
+      navigatorKey: _navigatorKey,
       theme: ThemeData(
         useMaterial3: true,
         primarySwatch: Colors.blueGrey,
-        appBarTheme: AppBarTheme(
+        appBarTheme: const AppBarTheme(
           backgroundColor: Constants.appBarColor,
           foregroundColor: Constants.lightText,
         ),
         colorScheme: Constants.colorScheme,
       ),
-      // Defined named routes for cleaner navigation management
       routes: {
         KeyTitan.home: (context) => KeyTitanHome(
               title: 'KeyTitan Password Manager',
-              navigatorKey: _mainNavigatorKey,
+              navigatorKey: _navigatorKey,
             ),
         KeyTitan.newFile: (context) => KeyTitanNew(
               title: 'New Password File',
-              navigatorKey: _mainNavigatorKey,
+              navigatorKey: _navigatorKey,
             ),
         KeyTitan.openFile: (context) => KeyTitanOpen(
               title: 'Open File',
-              navigatorKey: _mainNavigatorKey,
+              navigatorKey: _navigatorKey,
             ),
         KeyTitan.cloudSync: (context) => KeyTitanSync(
               title: 'Drive Sync',
-              navigatorKey: _mainNavigatorKey,
+              navigatorKey: _navigatorKey,
             ),
         KeyTitan.passList: (context) => KeyTitanList(
               title: 'Password List',
-              navigatorKey: _mainNavigatorKey,
+              navigatorKey: _navigatorKey,
             ),
         KeyTitan.exit: (context) => KeyTitanExit(
               title: 'Exiting',
-              navigatorKey: _mainNavigatorKey,
-            )
+              navigatorKey: _navigatorKey,
+            ),
       },
     );
   }
 }
 
-/// The Landing Screen of the application
+// Landing screen — renders the home-screen menu cards defined in CardInfo.
 class KeyTitanHome extends StatefulWidget {
   const KeyTitanHome({
-    super.key, 
-    required this.title, 
-    required this.navigatorKey
+    super.key,
+    required this.title,
+    required this.navigatorKey,
   });
 
   final String title;
@@ -142,24 +137,21 @@ class KeyTitanHome extends StatefulWidget {
 }
 
 class _KeyTitanHomeState extends State<KeyTitanHome> {
-  
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    // Initialize layout constants based on screen size once
-    final double screenHeight = MediaQuery.of(context).size.height;
-    if (Platform.isWindows || Platform.isLinux) {
-      Constants.cardHeight = screenHeight * 0.155;
-      Constants.cardSepHeight = screenHeight * 0.055;
+    final height = MediaQuery.of(context).size.height;
+    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      Constants.cardHeight = height * 0.155;
+      Constants.cardSepHeight = height * 0.055;
     } else {
-      Constants.cardHeight = screenHeight * 0.12;
+      Constants.cardHeight = height * 0.12;
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // Optimization: Pre-calculate the list of info to avoid mapping inside the builder
-    final cardData = CardInfo.values.toList();
+    final cards = CardInfo.values.toList();
 
     return Scaffold(
       appBar: genTitanAppBar(widget.title),
@@ -172,15 +164,19 @@ class _KeyTitanHomeState extends State<KeyTitanHome> {
             vertical: Constants.cardSepHeight,
             horizontal: 20,
           ),
-          itemCount: cardData.length,
-          separatorBuilder: (context, index) => 
-              Divider(height: Constants.cardSepHeight, thickness: 0, color: Colors.transparent),
+          itemCount: cards.length,
+          separatorBuilder: (_, __) => Divider(
+            height: Constants.cardSepHeight,
+            thickness: 0,
+            color: Colors.transparent,
+          ),
           itemBuilder: (context, index) {
-            final info = cardData[index];
+            final info = cards[index];
             return TitanButton(
               label: info.label,
               icon: info.icon,
-              onPressed: () => widget.navigatorKey.currentState!.pushNamed(info.loadState),
+              onPressed: () =>
+                  widget.navigatorKey.currentState!.pushNamed(info.loadState),
               height: Constants.cardHeight,
               color: Constants.cardColor,
             );
@@ -191,12 +187,12 @@ class _KeyTitanHomeState extends State<KeyTitanHome> {
   }
 }
 
-/// Confirm Exit Screen with graceful shutdown logic
+// Confirmation screen shown when the user chooses to exit the app.
 class KeyTitanExit extends StatefulWidget {
   const KeyTitanExit({
-    super.key, 
-    required this.title, 
-    required this.navigatorKey
+    super.key,
+    required this.title,
+    required this.navigatorKey,
   });
 
   final String title;
@@ -212,16 +208,13 @@ class _KeyTitanExitState extends State<KeyTitanExit> {
   Future<void> _gracefulExit() async {
     if (_isExiting) return;
     setState(() => _isExiting = true);
-
-    // Placeholder for cleanup: Close DB, clear secure storage, etc.
     await Future.delayed(const Duration(milliseconds: 300));
-
     exit(0);
   }
 
   @override
   Widget build(BuildContext context) {
-    final double buttonWidth = MediaQuery.of(context).size.width / 3;
+    final buttonWidth = MediaQuery.of(context).size.width / 3;
 
     return Scaffold(
       appBar: genTitanAppBar(widget.title),
@@ -241,7 +234,7 @@ class _KeyTitanExitState extends State<KeyTitanExit> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 30),
-              if (_isExiting) 
+              if (_isExiting)
                 const CircularProgressIndicator()
               else
                 Row(

@@ -1,5 +1,8 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
 import 'globals.dart';
 import 'passwords.dart';
 
@@ -20,6 +23,7 @@ class KeyTitanOpen extends StatefulWidget {
 class _KeyTitanOpenState extends State<KeyTitanOpen> {
   bool _isLoading = false;
   String? _errorMessage;
+
   final _passController = TextEditingController();
 
   @override
@@ -28,20 +32,23 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
     super.dispose();
   }
 
-  /// Handles picking the .ktn file and attempting decryption
   Future<void> _handleOpenFile() async {
-    // 1. Pick the file
-    FilePickerResult? result = await FilePicker.platform.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['ktn','pass','hydra'],
-    );
+    final appDir = await getApplicationDocumentsDirectory();
 
-    if (result == null || result.files.single.path == null) return;
+    // On Android the system file picker cannot navigate to app-private storage,
+    // so we enumerate .ktn/.pass/.hydra files there ourselves and let the user
+    // pick from a list. On desktop we use the normal file picker.
+    final String? filePath;
+    if (Platform.isAndroid) {
+      filePath = await _pickFromAppStorage(appDir.path);
+    } else {
+      filePath = await _pickWithSystemPicker(appDir.path);
+    }
 
-    final String filePath = result.files.single.path!;
+    if (filePath == null) return;
 
-    // 2. Prompt for password before attempting to open
-    final String? masterPass = await _showPasswordDialog();
+    final masterPass = await _showPasswordDialog();
+    _passController.clear();
     if (masterPass == null || masterPass.isEmpty) return;
 
     setState(() {
@@ -50,32 +57,107 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
     });
 
     try {
-      // 3. Initialize the passFile object
       final pFile = passFile(filePath, masterPass);
-      
-      // 4. Attempt Decryption (Salsa20)
-      bool success = await pFile.attemptDecrypt();
+      final ok = await pFile.attemptDecrypt();
 
-      if (success) {
-        // Navigate to the password list, passing the decrypted file object
+      if (ok) {
         if (mounted) {
           Navigator.pushReplacementNamed(
-            context, 
-            KeyTitan.passList, 
-            arguments: pFile
+            context,
+            KeyTitan.passList,
+            arguments: pFile,
           );
         }
       } else {
-        setState(() => _errorMessage = "Incorrect password or corrupted password file.");
+        setState(() => _errorMessage = 'Incorrect password or corrupted file.');
       }
     } catch (e) {
-      setState(() => _errorMessage = "Error: ${e.toString()}");
+      setState(() => _errorMessage = 'Error: ${e.toString()}');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
-  /// Dialog to collect the master password
+  /// Lists recognised password files inside app-private storage and shows a
+  /// dialog so the user can pick one without needing the system file picker.
+  Future<String?> _pickFromAppStorage(String dirPath) async {
+    final entities = await Directory(dirPath).list().toList();
+    final files = entities.whereType<File>().where((f) {
+      final ext = p.extension(f.path).toLowerCase();
+      return ext == '.ktn' || ext == '.pass' || ext == '.hydra';
+    }).toList()
+      ..sort((a, b) => p.basename(a.path).compareTo(p.basename(b.path)));
+
+    if (!mounted) return null;
+
+    if (files.isEmpty) {
+      await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: Constants.dialogColor,
+          title: const Text('No Files Found',
+              style: TextStyle(color: Constants.lightText)),
+          content: const Text(
+            'No .ktn password files were found in app storage.\n\n'
+            'Create a new file first, or use Drive Sync to download one.',
+            style: TextStyle(color: Constants.lightText),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('OK',
+                  style: TextStyle(color: Constants.lightText)),
+            ),
+          ],
+        ),
+      );
+      return null;
+    }
+
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: Constants.dialogColor,
+        title: const Text('Select File',
+            style: TextStyle(color: Constants.lightText)),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: files.length,
+            itemBuilder: (context, index) {
+              final name = p.basename(files[index].path);
+              return ListTile(
+                leading:
+                    const Icon(Icons.lock_outline, color: Constants.lightText),
+                title: Text(name,
+                    style: const TextStyle(color: Constants.lightText)),
+                onTap: () => Navigator.pop(context, files[index].path),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel',
+                style: TextStyle(color: Constants.lightText)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Uses the system file picker (desktop). Returns the selected path or null.
+  Future<String?> _pickWithSystemPicker(String initialDir) async {
+    final result = await FilePicker.platform.pickFiles(
+      type: FileType.custom,
+      allowedExtensions: ['ktn', 'pass', 'hydra'],
+      initialDirectory: initialDir,
+    );
+    return result?.files.single.path;
+  }
+
   Future<String?> _showPasswordDialog() {
     _passController.clear();
     return showDialog<String>(
@@ -86,20 +168,21 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
           controller: _passController,
           autofocus: true,
           obscureText: true,
-          decoration: const InputDecoration(hintText: "Enter File Password"),
+          decoration: const InputDecoration(hintText: 'Enter file password'),
+          onSubmitted: (_) => Navigator.pop(context, _passController.text),
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context), 
-            child: const Text('Cancel', style: TextStyle(color: Constants.lightText),)
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel',
+                style: TextStyle(color: Constants.lightText)),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context, _passController.text),
             style: TextButton.styleFrom(
               foregroundColor: Constants.cardColor,
-              padding: EdgeInsets.all(16),
-              elevation: 4.0,
-              backgroundColor: Colors.white
+              padding: const EdgeInsets.all(16),
+              backgroundColor: Colors.white,
             ),
             child: const Text('Unlock'),
           ),
@@ -122,11 +205,8 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
           mainAxisAlignment: MainAxisAlignment.center,
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            const Icon(
-              Icons.file_open_outlined,
-              size: 80,
-              color: Constants.lightText,
-            ),
+            const Icon(Icons.file_open_outlined,
+                size: 80, color: Constants.lightText),
             const SizedBox(height: 24),
             Text(
               'Open Existing Password File',
@@ -138,12 +218,11 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
             ),
             const SizedBox(height: 12),
             const Text(
-              'Select your .ktn KeyTitan file and enter your password to unlock.',
+              'Select your .ktn KeyTitan file and enter your file password to unlock.',
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white54),
             ),
             const SizedBox(height: 40),
-            
             if (_isLoading)
               const CircularProgressIndicator()
             else ...[
@@ -160,11 +239,11 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
                   child: Text(
                     _errorMessage!,
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                    style:
+                        TextStyle(color: Theme.of(context).colorScheme.error),
                   ),
                 ),
             ],
-            
             const Spacer(),
             TextButton.icon(
               onPressed: () => Navigator.of(context).pop(),
@@ -172,7 +251,7 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
               label: const Text('Back to Home'),
               style: TextButton.styleFrom(foregroundColor: Colors.white38),
             ),
-            const SizedBox(height: 60), 
+            const SizedBox(height: 60),
           ],
         ),
       ),

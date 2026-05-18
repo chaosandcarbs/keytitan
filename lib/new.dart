@@ -48,7 +48,7 @@ class _KeyTitanNewState extends State<KeyTitanNew> {
 
   Future<void> _pickDirectory() async {
     final appDir = await getApplicationDocumentsDirectory();
-    final selected = await FilePicker.platform.getDirectoryPath(
+    final selected = await FilePicker.getDirectoryPath(
       initialDirectory: appDir.path,
     );
     if (selected != null) {

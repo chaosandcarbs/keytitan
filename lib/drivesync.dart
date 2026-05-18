@@ -163,7 +163,7 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
       return;
     }
 
-    final selected = await FilePicker.platform.getDirectoryPath();
+    final selected = await FilePicker.getDirectoryPath();
     if (selected == null) return;
     await _loadFilesFromDirectory(selected);
   }

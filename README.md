@@ -37,9 +37,11 @@ As part of my design philosophy, I do not want my app to care what page you're o
     - Samsung Keyboard: On your keyboard, tap the three-dot menu, select "Clipboard", and delete all items (only removes recent history)
     - Gboard: Clipboard history is optional; you should be able to turn it off in gboard settings.
 
-### Why Clipboard? No Autofill?
+### Clipboard Or Autofill?
 
-Not right now, no. Many things in security are a tradeoff. 
+Many things in security are a tradeoff. KeyTitan supports clipboard output and
+is adding mobile autofill support, with Android available first and iOS
+scaffolded for a signed credential-provider extension.
 
 The pro of a clipboard is it's easier, and there's little OS integration to mess with, or worry about security implications of. However, background apps in Windows/Linux, and foreground apps (in Android 10+) can still see what's on your clipboard. Control and responsibility is up to you; if you want to copy your password and then paste it into your facebook stream, or someone phishes you into logging into a fake site (e.g. f4c3b00k.com) - you can expose it. 
 

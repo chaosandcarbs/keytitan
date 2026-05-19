@@ -264,155 +264,184 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: Text(widget.title)),
-      backgroundColor: Colors.black,
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24.0),
-        child: Column(
-          children: [
-            _buildStepCard(
-              step: '1',
-              title: 'Authenticate',
-              child: _isAuthenticating
-                  ? const CircularProgressIndicator()
-                  : Row(
-                      children: [
-                        Expanded(
-                          child: ElevatedButton.icon(
-                            onPressed:
-                                _isAuthenticated ? null : _handleAuthentication,
-                            icon: Icon(
-                              _isAuthenticated
-                                  ? Icons.check_circle
-                                  : Icons.login,
-                              color: Constants.lightText,
-                            ),
-                            label: Text(
-                              _isAuthenticated
-                                  ? 'Logged into Drive'
-                                  : 'Connect Google Drive',
-                              style:
-                                  const TextStyle(color: Constants.lightText),
-                            ),
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: _isAuthenticated
-                                  ? Colors.green.withValues(alpha: 0.5)
-                                  : Constants.dialogColor,
-                              padding: const EdgeInsets.all(16),
-                            ),
-                          ),
-                        ),
-                        if (_isAuthenticated) ...[
-                          const SizedBox(width: 8),
-                          IconButton(
-                            tooltip: 'Sign Out / Switch Account',
-                            icon: const Icon(Icons.logout,
-                                color: Colors.redAccent),
-                            onPressed: _handleSignOut,
-                            style: IconButton.styleFrom(
-                              backgroundColor: Constants.dialogColor,
-                              padding: const EdgeInsets.all(12),
+      appBar: genTitanAppBar(widget.title),
+      bottomSheet: bottomBar(context),
+      backgroundColor: Constants.backColor,
+      body: Container(
+        width: double.infinity,
+        height: double.infinity,
+        decoration: Constants.backgroundDecoration,
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 24, 20, 70),
+          child: Column(
+            children: [
+              _buildStepCard(
+                step: '1',
+                title: 'Authenticate',
+                child: _isAuthenticating
+                    ? const Center(child: CircularProgressIndicator())
+                    : Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              onPressed: _isAuthenticated
+                                  ? null
+                                  : _handleAuthentication,
+                              icon: Icon(
+                                _isAuthenticated
+                                    ? Icons.check_circle
+                                    : Icons.login,
+                                color: Constants.lightText,
+                              ),
+                              label: Text(
+                                _isAuthenticated
+                                    ? 'Logged into Drive'
+                                    : 'Connect Google Drive',
+                                style:
+                                    const TextStyle(color: Constants.lightText),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: _isAuthenticated
+                                    ? Colors.green.withValues(alpha: 0.5)
+                                    : Constants.cardColor,
+                                padding: const EdgeInsets.all(16),
+                              ),
                             ),
                           ),
+                          if (_isAuthenticated) ...[
+                            const SizedBox(width: 8),
+                            IconButton(
+                              tooltip: 'Sign Out / Switch Account',
+                              icon: const Icon(Icons.logout,
+                                  color: Colors.redAccent),
+                              onPressed: _handleSignOut,
+                              style: IconButton.styleFrom(
+                                backgroundColor: Constants.cardColor,
+                                padding: const EdgeInsets.all(12),
+                              ),
+                            ),
+                          ],
                         ],
-                      ],
-                    ),
-            ),
-            const SizedBox(height: 15),
-            _buildStepCard(
-              step: '2',
-              title: 'Local Sync Folder',
-              child: Column(
-                children: [
-                  TextField(
-                    controller: _pathController,
-                    readOnly: true,
-                    decoration: InputDecoration(
-                      hintText: Platform.isAndroid
-                          ? 'App private storage'
-                          : 'Pick a directory',
-                      // On Android the directory is fixed to app-private
-                      // storage; the picker button is not shown.
-                      suffixIcon: Platform.isAndroid
-                          ? null
-                          : IconButton(
-                              icon: const Icon(Icons.folder),
-                              onPressed: _pickDirectory,
-                            ),
-                    ),
-                  ),
-                  if (_localFiles.isNotEmpty)
-                    ListView.builder(
-                      shrinkWrap: true,
-                      physics: const NeverScrollableScrollPhysics(),
-                      itemCount: _localFiles.length,
-                      itemBuilder: (_, i) => ListTile(
-                        leading: const Icon(Icons.insert_drive_file,
-                            color: Colors.blueAccent),
-                        title: Text(
-                          p.basename(_localFiles[i].path),
-                          style: const TextStyle(fontSize: 12),
+                      ),
+              ),
+              const SizedBox(height: 15),
+              _buildStepCard(
+                step: '2',
+                title: 'Local Sync Folder',
+                child: Column(
+                  children: [
+                    TextField(
+                      controller: _pathController,
+                      readOnly: true,
+                      style: const TextStyle(color: Constants.lightText),
+                      decoration: InputDecoration(
+                        hintText: Platform.isAndroid
+                            ? 'App private storage'
+                            : 'Pick a directory',
+                        hintStyle: TextStyle(
+                          color: Constants.lightText.withValues(alpha: 0.5),
                         ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete,
-                              color: Colors.redAccent, size: 20),
-                          tooltip: 'Delete file',
-                          onPressed: () => _deleteLocalFile(_localFiles[i]),
-                        ),
+                        // On Android the directory is fixed to app-private
+                        // storage; the picker button is not shown.
+                        suffixIcon: Platform.isAndroid
+                            ? null
+                            : IconButton(
+                                icon: const Icon(
+                                  Icons.folder,
+                                  color: Constants.lightText,
+                                ),
+                                onPressed: _pickDirectory,
+                              ),
                       ),
                     ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 15),
-            _buildStepCard(
-              step: '3',
-              title: 'Cloud Backup & Restore',
-              child: Column(
-                children: [
-                  ElevatedButton.icon(
-                    onPressed: (_isAuthenticated && _localFiles.isNotEmpty)
-                        ? _handleUpload
-                        : null,
-                    icon: _isUploading
-                        ? const SizedBox(
-                            width: 20,
-                            height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Icon(Icons.cloud_upload),
-                    label: const Text('Upload All to Cloud',
-                        style: TextStyle(color: Constants.lightText)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Constants.dialogColor,
-                      padding: const EdgeInsets.all(16),
-                      iconColor: Constants.lightText,
-                    ),
-                  ),
-                  const Divider(height: 30),
-                  const Text(
-                    'FILES IN GOOGLE DRIVE',
-                    style: TextStyle(fontSize: 12, color: Constants.lightText),
-                  ),
-                  if (_isLoadingDrive) const CircularProgressIndicator(),
-                  if (!_isLoadingDrive && _driveFiles.isEmpty)
-                    const Text('No backups found on Drive',
-                        style: TextStyle(color: Constants.lightText)),
-                  ..._driveFiles.map((df) => ListTile(
-                        dense: true,
-                        title: Text(df.name ?? 'Unknown',
-                            style: const TextStyle(color: Colors.white)),
-                        subtitle: Text('${df.size ?? 0} bytes'),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.download,
-                              color: Colors.greenAccent),
-                          onPressed: () => _handleDownload(df),
+                    if (_localFiles.isNotEmpty)
+                      ListView.builder(
+                        shrinkWrap: true,
+                        physics: const NeverScrollableScrollPhysics(),
+                        itemCount: _localFiles.length,
+                        itemBuilder: (_, i) => ListTile(
+                          leading: const Icon(Icons.insert_drive_file,
+                              color: Colors.blueAccent),
+                          title: Text(
+                            p.basename(_localFiles[i].path),
+                            style: const TextStyle(
+                              color: Constants.lightText,
+                              fontSize: 12,
+                            ),
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.delete,
+                                color: Colors.redAccent, size: 20),
+                            tooltip: 'Delete file',
+                            onPressed: () => _deleteLocalFile(_localFiles[i]),
+                          ),
                         ),
-                      )),
-                ],
+                      ),
+                  ],
+                ),
               ),
-            ),
-          ],
+              const SizedBox(height: 15),
+              _buildStepCard(
+                step: '3',
+                title: 'Cloud Backup & Restore',
+                child: Column(
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: (_isAuthenticated && _localFiles.isNotEmpty)
+                          ? _handleUpload
+                          : null,
+                      icon: _isUploading
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.cloud_upload),
+                      label: const Text('Upload All to Cloud',
+                          style: TextStyle(color: Constants.lightText)),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Constants.cardColor,
+                        padding: const EdgeInsets.all(16),
+                        iconColor: Constants.lightText,
+                      ),
+                    ),
+                    const Divider(height: 30),
+                    const Text(
+                      'FILES IN GOOGLE DRIVE',
+                      style:
+                          TextStyle(fontSize: 12, color: Constants.lightText),
+                    ),
+                    if (_isLoadingDrive) const CircularProgressIndicator(),
+                    if (!_isLoadingDrive && _driveFiles.isEmpty)
+                      const Text('No backups found on Drive',
+                          style: TextStyle(color: Constants.lightText)),
+                    ..._driveFiles.map((df) => ListTile(
+                          dense: true,
+                          title: Text(df.name ?? 'Unknown',
+                              style:
+                                  const TextStyle(color: Constants.lightText)),
+                          subtitle: Text(
+                            '${df.size ?? 0} bytes',
+                            style: const TextStyle(color: Colors.white54),
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.download,
+                                color: Colors.greenAccent),
+                            onPressed: () => _handleDownload(df),
+                          ),
+                        )),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 24),
+              TextButton.icon(
+                onPressed: () => Navigator.of(context).pop(),
+                icon: const Icon(Icons.arrow_back, size: 16),
+                label: const Text('Back to Home'),
+                style: TextButton.styleFrom(foregroundColor: Colors.white38),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -424,7 +453,7 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
     required Widget child,
   }) {
     return Card(
-      color: const Color(0xFF1A1A1A),
+      color: Constants.dialogColor,
       child: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
@@ -432,7 +461,11 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
           children: [
             Text(
               'STEP $step: $title',
-              style: const TextStyle(fontSize: 11, color: Colors.blue),
+              style: const TextStyle(
+                fontSize: 11,
+                color: Constants.lightText,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 10),
             child,

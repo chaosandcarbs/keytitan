@@ -9,6 +9,7 @@ class KeyTitan {
   static const String openFile = '/open';
   static const String cloudSync = '/sync';
   static const String passList = '/list';
+  static const String settings = '/settings';
   static const String exit = '/exit';
 }
 
@@ -30,6 +31,11 @@ enum CardInfo {
     label: 'Google Drive Sync',
     icon: Icons.cloud_sync_outlined,
     loadState: KeyTitan.cloudSync,
+  ),
+  settings(
+    label: 'Settings',
+    icon: Icons.settings_outlined,
+    loadState: KeyTitan.settings,
   ),
   exit(
     label: 'Exit KeyTitan',

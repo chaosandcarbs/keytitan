@@ -30,6 +30,12 @@ android {
         versionName = flutter.versionName
     }
 
+    sourceSets {
+        main {
+            jniLibs.srcDirs += ["../../native/keytitan_core/prebuilt/android"]
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.

@@ -274,13 +274,19 @@ class GoogleDrive {
     final client = await getHttpClient();
     if (client == null) return null;
 
+    final safeFileName = _safeDriveFileName(fileName);
+    if (safeFileName == null) return null;
+
     final api = ga.DriveApi(client);
     final media = await api.files.get(
       fileId,
       downloadOptions: ga.DownloadOptions.fullMedia,
     ) as ga.Media;
 
-    final savePath = p.join(localDirPath, fileName);
+    final localRoot = p.normalize(p.absolute(localDirPath));
+    final savePath = p.normalize(p.absolute(p.join(localRoot, safeFileName)));
+    if (!p.isWithin(localRoot, savePath)) return null;
+
     final localFile = File(savePath);
 
     if (await localFile.exists()) {
@@ -301,6 +307,20 @@ class GoogleDrive {
       await sink.close();
     }
     return localFile;
+  }
+
+  String? _safeDriveFileName(String fileName) {
+    final trimmed = fileName.trim();
+    if (trimmed.isEmpty) return null;
+    if (RegExp(r'[<>:"/\\|?*\x00-\x1F]').hasMatch(trimmed)) return null;
+
+    final extension = p.extension(trimmed).toLowerCase();
+    if (extension != '.ktn' && extension != '.pass' && extension != '.hydra') {
+      return null;
+    }
+
+    final baseName = p.basename(trimmed);
+    return baseName == trimmed ? baseName : null;
   }
 
   // Finds the KeyTitanBackup folder in Drive, creating it if it doesn't exist.

@@ -1,9 +1,13 @@
+import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
+import 'autofill.dart';
 import 'globals.dart';
 import 'passwords.dart';
+import 'settings.dart';
 
 class KeyTitanList extends StatefulWidget {
   const KeyTitanList(
@@ -22,6 +26,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
   final idCon = TextEditingController();
   final titleCon = TextEditingController();
   final siteCon = TextEditingController();
+  final uriCon = TextEditingController();
   final catCon = TextEditingController();
   final userCon = TextEditingController();
   final passCon = TextEditingController();
@@ -39,6 +44,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
   // Set to true once pFile has been explicitly disposed so that the widget's
   // dispose() method does not double-dispose it.
   bool _pFileDisposed = false;
+  KeyTitanSettingsData _settings = const KeyTitanSettingsData();
 
   @override
   void initState() {
@@ -47,6 +53,14 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     if (!Constants.isMobile) {
       windowManager.addListener(this);
     }
+    _loadSettings();
+  }
+
+  Future<void> _loadSettings() async {
+    final settings = await KeyTitanSettingsStore.load();
+    if (!mounted) return;
+    setState(() => _settings = settings);
+    unawaited(_syncAutofillCache());
   }
 
   @override
@@ -54,12 +68,14 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     if (!Constants.isMobile) {
       windowManager.removeListener(this);
     }
+    KeyTitanAutofillBridge.setPasswordResolver(null);
     // Zero then dispose all text controllers so plaintext doesn't linger.
     _clearAllControllers();
     headCon.dispose();
     idCon.dispose();
     titleCon.dispose();
     siteCon.dispose();
+    uriCon.dispose();
     catCon.dispose();
     userCon.dispose();
     passCon.dispose();
@@ -70,6 +86,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     if (!_pFileDisposed) {
       pFile?.dispose();
     }
+    unawaited(KeyTitanAutofillBridge.clearEntries());
     super.dispose();
   }
 
@@ -80,6 +97,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     idCon.text = '';
     titleCon.text = '';
     siteCon.text = '';
+    uriCon.text = '';
     catCon.text = '';
     userCon.text = '';
     passCon.text = '';
@@ -96,9 +114,11 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     }
     _isClosing = true;
     _clearAllControllers();
+    KeyTitanAutofillBridge.setPasswordResolver(null);
     try {
       await pFile?.dispose();
       _pFileDisposed = true;
+      await KeyTitanAutofillBridge.clearEntries();
     } catch (e) {
       debugPrint('Window-close cleanup error: $e');
     }
@@ -118,7 +138,77 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     }
   }
 
-  void _triggerRefresh() => _refreshTrigger.value++;
+  void _triggerRefresh() {
+    _refreshTrigger.value++;
+    unawaited(_syncAutofillCache());
+  }
+
+  Future<void> _syncAutofillCache() async {
+    if (!Constants.isMobile) return;
+
+    final file = pFile;
+    if (file == null || _settings.outputMode != PasswordOutputMode.autofill) {
+      KeyTitanAutofillBridge.setPasswordResolver(null);
+      await KeyTitanAutofillBridge.clearEntries();
+      return;
+    }
+
+    KeyTitanAutofillBridge.setPasswordResolver(_resolveAutofillPassword);
+    final entries = <Map<String, Object?>>[];
+    final categories = await file.getCategories();
+    for (final category in categories) {
+      final rows = await file.getPasswordsByCategory(category['category']);
+      for (final row in rows) {
+        final site = row['site']?.toString() ?? '';
+        entries.add({
+          'id': row['id']?.toString() ?? '',
+          'title': row['title']?.toString() ?? '',
+          'site': site,
+          'username': row['username']?.toString() ?? '',
+          'uris': _autofillUris(row['uris']?.toString() ?? '', site),
+        });
+      }
+    }
+
+    await KeyTitanAutofillBridge.updateEntries(
+      entries: entries,
+      attemptWindowSeconds: _settings.autofillAttemptWindowSeconds,
+    );
+  }
+
+  Future<String?> _resolveAutofillPassword(String entryId) async {
+    final file = pFile;
+    if (file == null || _settings.outputMode != PasswordOutputMode.autofill) {
+      return null;
+    }
+
+    final id = int.tryParse(entryId);
+    if (id == null) return null;
+
+    final row = await file.getPasswordById(id);
+    final ciphertext = row?['password']?.toString();
+    if (ciphertext == null || ciphertext.isEmpty) return null;
+
+    final plaintext =
+        await keyTitanPass.hdecrypt(file.passwordBytes, ciphertext);
+    if (plaintext == '[Decryption Error]') return null;
+    return plaintext;
+  }
+
+  List<String> _autofillUris(String storedUris, String site) {
+    try {
+      final decoded = jsonDecode(storedUris);
+      if (decoded is List) {
+        return decoded.map((value) => value.toString()).toList();
+      }
+    } catch (_) {}
+
+    final derived = jsonDecode(keyTitanPass.deriveUris(site));
+    if (derived is List) {
+      return derived.map((value) => value.toString()).toList();
+    }
+    return [];
+  }
 
   // ---------------------------------------------------------------------------
   // CRUD helpers
@@ -129,6 +219,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
       id: -1,
       title: titleCon.text,
       site: siteCon.text,
+      uris: uriCon.text,
       category: catCon.text,
       username: userCon.text,
       displayPassword: passCon.text,
@@ -144,6 +235,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
       id: int.parse(idCon.text),
       title: titleCon.text,
       site: siteCon.text,
+      uris: uriCon.text,
       category: catCon.text,
       username: userCon.text,
       displayPassword: passCon.text,
@@ -165,6 +257,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     _isClosing = true;
     // Zero dialog fields before the encrypt+dispose steps.
     _clearAllControllers();
+    KeyTitanAutofillBridge.setPasswordResolver(null);
     try {
       final saved = await pFile!.attemptEncrypt();
       if (!saved) debugPrint('Warning: encryption returned false on save.');
@@ -176,6 +269,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     try {
       await pFile?.dispose();
       _pFileDisposed = true;
+      await KeyTitanAutofillBridge.clearEntries();
     } catch (e) {
       debugPrint('Save cleanup error: $e');
     }
@@ -189,9 +283,11 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     if (_isClosing) return;
     _isClosing = true;
     _clearAllControllers();
+    KeyTitanAutofillBridge.setPasswordResolver(null);
     try {
       await pFile?.dispose();
       _pFileDisposed = true;
+      await KeyTitanAutofillBridge.clearEntries();
     } catch (e) {
       debugPrint('Close cleanup error: $e');
     }
@@ -286,7 +382,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
                 final width = MediaQuery.of(context).size.width;
 
                 return SizedBox(
-                  height: height * 0.63,
+                  height: height * 0.70,
                   width: width * 0.8,
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.center,
@@ -311,6 +407,16 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
                         validator: (v) => (v == null || v.isEmpty)
                             ? 'Site is required'
                             : null,
+                      ),
+                      TextFormField(
+                        controller: uriCon,
+                        minLines: 1,
+                        maxLines: 2,
+                        decoration: const InputDecoration(
+                          hintText:
+                              'Optional: extra autofill URIs, androidapp://...',
+                          label: Text('Autofill URIs'),
+                        ),
                       ),
                       // Category: pick an existing one or type a new one.
                       Row(
@@ -354,7 +460,8 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
                             flex: 5,
                             child: TextFormField(
                               controller: passCon,
-                              obscureText: true,
+                              obscureText:
+                                  !(edit && _settings.showPlaintextOnEdit),
                               decoration: const InputDecoration(
                                 hintText: 'Enter or generate a password',
                                 label: Text('Password'),
@@ -531,6 +638,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
                         category: cat['category'],
                         pFile: pFile!,
                         masterPassword: pFile!.passwordBytes,
+                        settings: _settings,
                         onEdit: (data) async {
                           // Decrypt the password only at the moment the edit
                           // button is pressed, then populate the dialog.
@@ -542,6 +650,8 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
                           idCon.text = data['id'].toString();
                           titleCon.text = data['title'] as String;
                           siteCon.text = (data['site'] ?? '') as String;
+                          uriCon.text = keyTitanPass
+                              .displayUris((data['uris'] ?? '').toString());
                           catCon.text = cat['category'] as String;
                           userCon.text = (data['username'] ?? '') as String;
                           passCon.text = decryptedPass;
@@ -617,6 +727,7 @@ class _CategoryListView extends StatelessWidget {
   final String category;
   final passFile pFile;
   final Uint8List masterPassword;
+  final KeyTitanSettingsData settings;
 
   /// Called when the user taps Edit. Receives the raw DB row (password field
   /// is still the encrypted ciphertext string).
@@ -627,6 +738,7 @@ class _CategoryListView extends StatelessWidget {
     required this.category,
     required this.pFile,
     required this.masterPassword,
+    required this.settings,
     required this.onEdit,
     required this.onDelete,
   });
@@ -637,6 +749,16 @@ class _CategoryListView extends StatelessWidget {
     if (uri.host.isEmpty || !uri.host.contains('.')) return;
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  Future<void> _clearClipboardLater(String copiedText) async {
+    await Future.delayed(
+      Duration(seconds: settings.clipboardClearDelaySeconds),
+    );
+    final current = await Clipboard.getData('text/plain');
+    if (current?.text == copiedText) {
+      await Clipboard.setData(const ClipboardData(text: ''));
     }
   }
 
@@ -727,11 +849,25 @@ class _CategoryListView extends StatelessWidget {
             hasSite ? () => _launchInBrowser(item['site'].toString()) : null,
       ),
       IconButton(
-        tooltip: 'Copy Password',
-        icon: const Icon(Icons.copy),
+        tooltip: settings.outputMode == PasswordOutputMode.clipboard
+            ? 'Copy Password'
+            : 'Autofill Password',
+        icon: Icon(
+          settings.outputMode == PasswordOutputMode.clipboard
+              ? Icons.copy
+              : Icons.password,
+        ),
         iconSize: Constants.cardIconSize,
         onPressed: () async {
           final messenger = ScaffoldMessenger.of(context);
+          if (settings.outputMode == PasswordOutputMode.autofill) {
+            messenger.showSnackBar(
+              const SnackBar(
+                content: Text('Use the OS autofill prompt to fill passwords'),
+              ),
+            );
+            return;
+          }
           // Decrypt only at the moment the copy button is pressed.
           // The plaintext exists only for the duration of this callback.
           final plaintext = await keyTitanPass.hdecrypt(
@@ -739,6 +875,9 @@ class _CategoryListView extends StatelessWidget {
             item['password'] as String,
           );
           Clipboard.setData(ClipboardData(text: plaintext));
+          if (settings.clearClipboardAfterCopy) {
+            unawaited(_clearClipboardLater(plaintext));
+          }
           messenger.showSnackBar(
             const SnackBar(content: Text('Password copied to clipboard')),
           );

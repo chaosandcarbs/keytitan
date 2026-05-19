@@ -1,0 +1,21 @@
+[package]
+name = "keytitan_core"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+name = "keytitan_core"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+aes = "0.8"
+argon2 = { version = "0.5", features = ["std"] }
+base64 = "0.22"
+cbc = { version = "0.1", features = ["alloc"] }
+chacha20poly1305 = { version = "0.10", features = ["std"] }
+cipher = { version = "0.4", features = ["alloc"] }
+getrandom = "0.2"
+salsa20 = "0.10"
+sha2 = "0.10"
+zeroize = "1.8"

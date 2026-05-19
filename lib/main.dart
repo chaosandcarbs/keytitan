@@ -9,6 +9,7 @@ import 'new.dart';
 import 'open.dart';
 import 'drivesync.dart';
 import 'passlist.dart';
+import 'settings.dart';
 import 'globals.dart';
 
 void main() {
@@ -112,6 +113,10 @@ class KeyTitanApp extends StatelessWidget {
               title: 'Password List',
               navigatorKey: _navigatorKey,
             ),
+        KeyTitan.settings: (context) => KeyTitanSettings(
+              title: 'Settings',
+              navigatorKey: _navigatorKey,
+            ),
         KeyTitan.exit: (context) => KeyTitanExit(
               title: 'Exiting',
               navigatorKey: _navigatorKey,
@@ -142,10 +147,10 @@ class _KeyTitanHomeState extends State<KeyTitanHome> {
     super.didChangeDependencies();
     final height = MediaQuery.of(context).size.height;
     if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      Constants.cardHeight = height * 0.155;
-      Constants.cardSepHeight = height * 0.055;
+      Constants.cardHeight = height * 0.125;
+      Constants.cardSepHeight = height * 0.043;
     } else {
-      Constants.cardHeight = height * 0.12;
+      Constants.cardHeight = height * 0.1;
     }
   }
 

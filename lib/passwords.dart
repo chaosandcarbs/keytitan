@@ -11,6 +11,7 @@ import 'package:crypto/crypto.dart' as dart_crypto;
 import 'package:sqlite3/sqlite3.dart' as sqlite;
 import 'package:typed_data/typed_buffers.dart';
 import 'globals.dart';
+import 'native_core.dart';
 
 // ---------------------------------------------------------------------------
 // .ktn file format
@@ -96,7 +97,8 @@ class passFile {
     await db.execute(
       'CREATE TABLE IF NOT EXISTS password('
       'id INTEGER PRIMARY KEY, '
-      'title TEXT, site TEXT, category_id INTEGER, username TEXT, password TEXT, '
+      'title TEXT, site TEXT, category_id INTEGER, username TEXT, '
+      'password TEXT, uris TEXT, '
       'FOREIGN KEY(category_id) REFERENCES category(id));',
     );
   }
@@ -133,6 +135,20 @@ class passFile {
       final f = File(fileName);
       if (!await f.exists()) return false;
       final encData = await f.readAsBytes();
+
+      final nativeDecrypted =
+          KeyTitanNativeCore.instance?.decryptVault(encData, _passwordBytes);
+      if (nativeDecrypted != null) {
+        try {
+          if (_isValidSqliteBytes(nativeDecrypted)) {
+            await _loadDbFromBytes(nativeDecrypted);
+            isEncrypted = false;
+            return true;
+          }
+        } finally {
+          nativeDecrypted.fillRange(0, nativeDecrypted.length, 0);
+        }
+      }
 
       // Detect v3 by magic prefix "KTN3".
       // Layout: [4 magic][12 nonce][16 salt][ciphertext+16 MAC] → min 49 bytes
@@ -190,25 +206,40 @@ class passFile {
 
     try {
       final rawBytes = await _exportDbToBytes();
+      try {
+        final nativeEncrypted =
+            KeyTitanNativeCore.instance?.encryptVault(rawBytes, _passwordBytes);
+        if (nativeEncrypted != null) {
+          try {
+            await File(fileName).writeAsBytes(nativeEncrypted);
+            isEncrypted = true;
+            return true;
+          } finally {
+            nativeEncrypted.fillRange(0, nativeEncrypted.length, 0);
+          }
+        }
 
-      final salt = _secureRandomBytes(16);
-      final nonce = _secureRandomBytes(12);
+        final salt = _secureRandomBytes(16);
+        final nonce = _secureRandomBytes(12);
 
-      final keyBytes = await _deriveKeyArgon2id(_passwordBytes, salt);
-      final cipherPayload = await _chaCha20Encrypt(keyBytes, nonce, rawBytes);
-      keyBytes.fillRange(0, keyBytes.length, 0);
+        final keyBytes = await _deriveKeyArgon2id(_passwordBytes, salt);
+        final cipherPayload = await _chaCha20Encrypt(keyBytes, nonce, rawBytes);
+        keyBytes.fillRange(0, keyBytes.length, 0);
 
-      // v3 layout: [4 magic "KTN3"][12 nonce][16 salt][ciphertext+16 MAC]
-      final out = Uint8List(4 + 12 + 16 + cipherPayload.length);
-      out.setRange(0, 4, _kV3Magic);
-      out.setRange(4, 16, nonce);
-      out.setRange(16, 32, salt);
-      out.setRange(32, out.length, cipherPayload);
+        // v3 layout: [4 magic "KTN3"][12 nonce][16 salt][ciphertext+16 MAC]
+        final out = Uint8List(4 + 12 + 16 + cipherPayload.length);
+        out.setRange(0, 4, _kV3Magic);
+        out.setRange(4, 16, nonce);
+        out.setRange(16, 32, salt);
+        out.setRange(32, out.length, cipherPayload);
 
-      await File(fileName).writeAsBytes(out);
+        await File(fileName).writeAsBytes(out);
 
-      isEncrypted = true;
-      return true;
+        isEncrypted = true;
+        return true;
+      } finally {
+        rawBytes.fillRange(0, rawBytes.length, 0);
+      }
     } catch (e) {
       debugPrint('Encryption error: $e');
       return false;
@@ -290,7 +321,8 @@ class passFile {
           'SELECT id, category FROM category ORDER BY id ASC',
         );
         final passwords = srcDb.select(
-          'SELECT id, title, site, category_id, username, password '
+          'SELECT id, title, site, category_id, username, password, '
+          '${_sqliteColumnExists(srcDb, 'password', 'uris') ? 'uris' : "'' AS uris"} '
           'FROM password ORDER BY id ASC',
         );
 
@@ -320,6 +352,7 @@ class passFile {
                   'category_id': row['category_id'],
                   'username': row['username'],
                   'password': row['password'],
+                  'uris': row['uris'],
                 },
                 conflictAlgorithm: ConflictAlgorithm.replace);
           }
@@ -342,8 +375,8 @@ class passFile {
         );
         final passStmt = dstDb.prepare(
           'INSERT OR REPLACE INTO password('
-          'id, title, site, category_id, username, password'
-          ') VALUES (?, ?, ?, ?, ?, ?)',
+          'id, title, site, category_id, username, password, uris'
+          ') VALUES (?, ?, ?, ?, ?, ?, ?)',
         );
 
         for (final row in categories) {
@@ -357,6 +390,7 @@ class passFile {
             row['category_id'],
             row['username'],
             row['password'],
+            row['uris'],
           ]);
         }
         catStmt.close();
@@ -435,9 +469,15 @@ class passFile {
     db.execute(
       'CREATE TABLE IF NOT EXISTS password('
       'id INTEGER PRIMARY KEY, '
-      'title TEXT, site TEXT, category_id INTEGER, username TEXT, password TEXT, '
+      'title TEXT, site TEXT, category_id INTEGER, username TEXT, '
+      'password TEXT, uris TEXT, '
       'FOREIGN KEY(category_id) REFERENCES category(id));',
     );
+  }
+
+  bool _sqliteColumnExists(sqlite.Database db, String table, String column) {
+    final columns = db.select('PRAGMA table_info($table)');
+    return columns.any((row) => row['name'] == column);
   }
 
   // ---------------------------------------------------------------------------
@@ -465,11 +505,26 @@ class passFile {
     final col = (category is String) ? 'B.category' : 'B.id';
     return db.rawQuery('''
       SELECT A.id, A.title, COALESCE(A.site, '') AS site,
-             A.username, A.password, A.category_id, B.category
+             A.username, A.password, COALESCE(A.uris, '') AS uris,
+             A.category_id, B.category
       FROM password A
       JOIN category B ON A.category_id = B.id
       WHERE $col = ?
     ''', [category]);
+  }
+
+  Future<Map<String, dynamic>?> getPasswordById(int id) async {
+    final db = await _initDatabase();
+    final rows = await db.rawQuery('''
+      SELECT A.id, A.title, COALESCE(A.site, '') AS site,
+             A.username, A.password, COALESCE(A.uris, '') AS uris,
+             A.category_id, B.category
+      FROM password A
+      JOIN category B ON A.category_id = B.id
+      WHERE A.id = ?
+      LIMIT 1
+    ''', [id]);
+    return rows.isEmpty ? null : rows.first;
   }
 
   Future<int> savePassword(keyTitanPass pass) async {
@@ -486,6 +541,7 @@ class passFile {
       'category_id': catId,
       'username': pass.username,
       'password': encryptedField,
+      'uris': pass.normalizedUris,
     };
 
     if (pass.id == -1) {
@@ -541,6 +597,7 @@ class keyTitanPass {
   String category;
   String username;
   String displayPassword;
+  String uris;
 
   keyTitanPass({
     this.id = -1,
@@ -549,7 +606,56 @@ class keyTitanPass {
     required this.category,
     required this.username,
     this.displayPassword = '',
+    this.uris = '',
   });
+
+  String get normalizedUris {
+    if (uris.trim().isNotEmpty) return normalizeUriOverrides(uris);
+    return deriveUris(site);
+  }
+
+  static String normalizeUriOverrides(String rawUris) {
+    final trimmed = rawUris.trim();
+    if (trimmed.isEmpty) return '[]';
+
+    try {
+      final decoded = jsonDecode(trimmed);
+      if (decoded is List) {
+        return jsonEncode(_cleanUriValues(
+          decoded.map((value) => value.toString()),
+        ));
+      }
+    } catch (_) {}
+
+    return jsonEncode(_cleanUriValues(
+      trimmed.split(RegExp(r'[\r\n,]+')),
+    ));
+  }
+
+  static String displayUris(String storedUris) {
+    final trimmed = storedUris.trim();
+    if (trimmed.isEmpty) return '';
+
+    try {
+      final decoded = jsonDecode(trimmed);
+      if (decoded is List) {
+        return _cleanUriValues(decoded.map((value) => value.toString()))
+            .join('\n');
+      }
+    } catch (_) {}
+
+    return trimmed;
+  }
+
+  static List<String> _cleanUriValues(Iterable<String> values) {
+    final cleaned = <String>[];
+    for (final value in values) {
+      final trimmed = value.trim();
+      if (trimmed.isEmpty || cleaned.contains(trimmed)) continue;
+      cleaned.add(trimmed);
+    }
+    return cleaned;
+  }
 
   // ---------------------------------------------------------------------------
   // Field-level ChaCha20-Poly1305 encryption
@@ -581,6 +687,10 @@ class keyTitanPass {
 
   static Future<String> hencrypt(Uint8List seedBytes, String plainText) async {
     if (plainText.isEmpty) return '';
+    final nativeEncrypted =
+        KeyTitanNativeCore.instance?.fieldEncrypt(seedBytes, plainText);
+    if (nativeEncrypted != null) return nativeEncrypted;
+
     final nonce = _secureRandomBytes(12);
     final keyBytes = _deriveFieldKey(seedBytes);
     try {
@@ -599,6 +709,10 @@ class keyTitanPass {
 
   static Future<String> hdecrypt(Uint8List seedBytes, String cipherText) async {
     if (cipherText.isEmpty) return '';
+    final nativeDecrypted =
+        KeyTitanNativeCore.instance?.fieldDecrypt(seedBytes, cipherText);
+    if (nativeDecrypted != null) return nativeDecrypted;
+
     if (cipherText.startsWith('$_fieldCipherPrefix:')) {
       return _hdecryptChaCha20(seedBytes, cipherText);
     }
@@ -664,5 +778,42 @@ class keyTitanPass {
     final rand = Random.secure();
     return List.generate(length, (_) => alphabet[rand.nextInt(alphabet.length)])
         .join();
+  }
+
+  static String deriveUris(String site) {
+    final nativeUris = KeyTitanNativeCore.instance?.deriveUris(site);
+    if (nativeUris != null) return nativeUris;
+
+    final raw = site.trim();
+    if (raw.isEmpty) return '[]';
+
+    final values = <String>{raw};
+    final lowerRaw = raw.toLowerCase();
+    if (lowerRaw.startsWith('androidapp://') || lowerRaw.startsWith('app://')) {
+      final packageName = lowerRaw.split('://').last.split('/').first;
+      if (packageName.isNotEmpty) values.add(packageName);
+      return jsonEncode(values.toList());
+    }
+
+    final parsed = raw.contains('://') ? Uri.tryParse(raw) : null;
+    final host = parsed?.host.isNotEmpty == true
+        ? parsed!.host.toLowerCase()
+        : raw
+            .replaceFirst(RegExp(r'^https?://', caseSensitive: false), '')
+            .split('/')
+            .first
+            .toLowerCase();
+
+    if (host.isNotEmpty) {
+      values.add(host);
+      if (host.contains('.')) {
+        values.add('https://$host');
+        if (!host.startsWith('www.')) {
+          values.add('https://www.$host');
+        }
+      }
+    }
+
+    return jsonEncode(values.toList());
   }
 }

@@ -10,6 +10,8 @@
 .history
 .svn/
 .swiftpm/
+.kilo/
+.dart_tool/
 migrate_working_dir/
 
 !/pubspec.lock
@@ -172,3 +174,43 @@ app.*.symbols
 .gclient_previous_custom_vars
 .gclient_previous_sync_commits
 kt.env
+
+# Rust native build artifacts
+native/**/target/
+
+# Project-local tool/cache output
+.dart_appdata/
+**/.kotlin/
+
+# Local secrets and environment overrides
+.env.*
+!.env.example
+kt.env
+kt.env.*
+!kt.env.example
+
+# Local KeyTitan vault files
+*.ktn
+*.pass
+*.hydra
+
+# Signing material and packaged release artifacts
+*.keystore
+*.p12
+*.pfx
+*.mobileprovision
+*.cer
+*.der
+*.pem
+*.apk
+*.aab
+*.msix
+*.msixbundle
+*.appx
+*.appxbundle
+
+# Temporary/editor artifacts
+*.tmp
+*.temp
+*.bak
+*.orig

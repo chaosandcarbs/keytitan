@@ -53,8 +53,8 @@ void _initDesktop() async {
     );
   });
 
-  Constants.titleTextSize = 26;
-  Constants.menuTextSize = 16;
+  Constants.titleTextSize = 23;
+  Constants.menuTextSize = 15;
 }
 
 // One-time setup for Android and iOS.

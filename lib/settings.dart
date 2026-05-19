@@ -39,8 +39,8 @@ class KeyTitanSettingsData {
 
   const KeyTitanSettingsData({
     this.outputMode = PasswordOutputMode.clipboard,
-    this.clearClipboardAfterCopy = false,
-    this.clipboardClearDelaySeconds = 30,
+    this.clearClipboardAfterCopy = true,
+    this.clipboardClearDelaySeconds = 15,
     this.showPlaintextOnEdit = false,
     this.autofillAttemptWindowSeconds = 30,
   });
@@ -81,9 +81,11 @@ class KeyTitanSettingsData {
       outputMode: _supportsAutofillMode
           ? parsedOutputMode
           : PasswordOutputMode.clipboard,
-      clearClipboardAfterCopy: json['clearClipboardAfterCopy'] == true,
+      clearClipboardAfterCopy: json.containsKey('clearClipboardAfterCopy')
+          ? json['clearClipboardAfterCopy'] == true
+          : true,
       clipboardClearDelaySeconds:
-          clipboardDelayOptions.contains(parsedDelayInt) ? parsedDelayInt! : 30,
+          clipboardDelayOptions.contains(parsedDelayInt) ? parsedDelayInt! : 15,
       showPlaintextOnEdit: json['showPlaintextOnEdit'] == true,
       autofillAttemptWindowSeconds:
           autofillAttemptWindowOptions.contains(parsedAutofillWindowInt)
@@ -376,7 +378,7 @@ class _KeyTitanSettingsState extends State<KeyTitanSettings> {
       children: [
         Text(mode.label),
         const Text(
-          'Windows - coming soon',
+          'Desktop - coming soon',
           style: TextStyle(fontSize: 10),
         ),
       ],

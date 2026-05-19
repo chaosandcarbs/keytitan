@@ -56,8 +56,9 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
       _errorMessage = null;
     });
 
+    passFile? pFile;
     try {
-      final pFile = passFile(filePath, masterPass);
+      pFile = passFile(filePath, masterPass);
       final ok = await pFile.attemptDecrypt();
 
       if (ok) {
@@ -67,11 +68,15 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
             KeyTitan.passList,
             arguments: pFile,
           );
+        } else {
+          await pFile.dispose();
         }
       } else {
+        await pFile.dispose();
         setState(() => _errorMessage = 'Incorrect password or corrupted file.');
       }
     } catch (e) {
+      await pFile?.dispose();
       setState(() => _errorMessage = 'Error: ${e.toString()}');
     } finally {
       if (mounted) setState(() => _isLoading = false);

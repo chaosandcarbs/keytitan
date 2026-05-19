@@ -17,6 +17,8 @@ import android.view.autofill.AutofillId
 import android.view.autofill.AutofillValue
 import android.widget.RemoteViews
 
+private const val MAX_AUTOFILL_DATASETS = 5
+
 @TargetApi(Build.VERSION_CODES.O)
 class KeyTitanAutofillService : android.service.autofill.AutofillService() {
     override fun onFillRequest(
@@ -38,14 +40,14 @@ class KeyTitanAutofillService : android.service.autofill.AutofillService() {
         val fields = AutofillFieldParser.parse(structure)
         val passwordId = fields.passwordId
         val usernameId = fields.usernameId
-        if ((passwordId == null && usernameId == null) || fields.identifiers.isEmpty()) {
+        if ((passwordId == null && usernameId == null) || !fields.hasRequesterIdentifiers()) {
             callback.onSuccess(null)
             return
         }
 
         val matches = snapshot.entries
-            .filter { entry -> entry.matches(fields.identifiers) }
-            .take(10)
+            .filter { entry -> entry.matches(fields) }
+            .take(MAX_AUTOFILL_DATASETS)
 
         if (matches.isEmpty()) {
             callback.onSuccess(null)
@@ -131,7 +133,7 @@ class KeyTitanAutofillService : android.service.autofill.AutofillService() {
         val response = FillResponse.Builder()
         var hasDataset = false
 
-        for (entry in matches.filter { it.username.isNotBlank() }.take(10)) {
+        for (entry in matches.filter { it.username.isNotBlank() }.take(MAX_AUTOFILL_DATASETS)) {
             val presentation = keyTitanPresentation(entry.presentationLabel("username"))
             val dataset = Dataset.Builder(presentation)
             dataset.setValue(
@@ -175,8 +177,13 @@ private fun KeyTitanAutofillEntry.presentationLabel(kind: String): String {
 private data class AutofillFields(
     var usernameId: AutofillId? = null,
     var passwordId: AutofillId? = null,
-    val identifiers: MutableSet<String> = mutableSetOf(),
-)
+    var packageName: String? = null,
+    val webIdentifiers: MutableSet<String> = mutableSetOf(),
+) {
+    fun hasRequesterIdentifiers(): Boolean {
+        return packageName?.isNotBlank() == true || webIdentifiers.isNotEmpty()
+    }
+}
 
 @TargetApi(Build.VERSION_CODES.O)
 private object AutofillFieldParser {
@@ -184,7 +191,7 @@ private object AutofillFieldParser {
         val fields = AutofillFields()
         structure.activityComponent?.packageName
             ?.lowercase()
-            ?.let { fields.identifiers.add(it) }
+            ?.let { fields.packageName = it }
 
         for (i in 0 until structure.windowNodeCount) {
             visit(structure.getWindowNodeAt(i).rootViewNode, fields)
@@ -197,8 +204,8 @@ private object AutofillFieldParser {
             ?.lowercase()
             ?.takeIf { it.isNotBlank() }
             ?.let { domain ->
-                fields.identifiers.add(domain)
-                fields.identifiers.add(domain.removePrefix("www."))
+                fields.webIdentifiers.add(domain)
+                fields.webIdentifiers.add(domain.removePrefix("www."))
             }
 
         val autofillId = node.autofillId
@@ -245,20 +252,34 @@ private object AutofillFieldParser {
     }
 }
 
-private fun KeyTitanAutofillEntry.matches(identifiers: Set<String>): Boolean {
-    val entryIdentifiers = mutableSetOf<String>()
-    entryIdentifiers.addAll(normalizedIdentifiers(site))
-    for (uri in uris) {
-        entryIdentifiers.addAll(normalizedIdentifiers(uri))
+private fun KeyTitanAutofillEntry.matches(fields: AutofillFields): Boolean {
+    val packageName = fields.packageName
+    if (!packageName.isNullOrBlank()) {
+        val appIdentifiers = mutableSetOf<String>()
+        appIdentifiers.addAll(normalizedAppIdentifiers(site))
+        for (uri in uris) {
+            appIdentifiers.addAll(normalizedAppIdentifiers(uri))
+        }
+        if (packageName in appIdentifiers) return true
     }
-    return entryIdentifiers.any { it in identifiers }
+
+    if (fields.webIdentifiers.isEmpty()) return false
+
+    val entryIdentifiers = mutableSetOf<String>()
+    entryIdentifiers.addAll(normalizedWebIdentifiers(site))
+    for (uri in uris) {
+        entryIdentifiers.addAll(normalizedWebIdentifiers(uri))
+    }
+    return entryIdentifiers.any { it in fields.webIdentifiers }
 }
 
-private fun normalizedIdentifiers(value: String): Set<String> {
+private fun normalizedWebIdentifiers(value: String): Set<String> {
     val raw = value.trim().lowercase()
     if (raw.isBlank()) return emptySet()
+    if (raw.startsWith("androidapp://") || raw.startsWith("app://")) {
+        return emptySet()
+    }
 
-    val identifiers = mutableSetOf(raw)
     val parsed = if (raw.contains("://")) Uri.parse(raw) else null
     val host = parsed?.host?.lowercase()
         ?: raw
@@ -266,14 +287,21 @@ private fun normalizedIdentifiers(value: String): Set<String> {
             .removePrefix("http://")
             .substringBefore("/")
 
-    if (host.isNotBlank()) {
-        identifiers.add(host)
-        identifiers.add(host.removePrefix("www."))
+    if (host.isBlank() || !host.contains(".")) {
+        return emptySet()
     }
+
+    return setOf(host, host.removePrefix("www."))
+}
+
+private fun normalizedAppIdentifiers(value: String): Set<String> {
+    val raw = value.trim().lowercase()
+    if (raw.isBlank()) return emptySet()
 
     if (raw.startsWith("androidapp://") || raw.startsWith("app://")) {
-        identifiers.add(raw.substringAfter("://").substringBefore("/"))
+        val packageName = raw.substringAfter("://").substringBefore("/")
+        if (packageName.isNotBlank()) return setOf(packageName)
     }
 
-    return identifiers
+    return emptySet()
 }

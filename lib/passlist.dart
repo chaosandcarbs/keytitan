@@ -258,11 +258,24 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     // Zero dialog fields before the encrypt+dispose steps.
     _clearAllControllers();
     KeyTitanAutofillBridge.setPasswordResolver(null);
+    bool saved = false;
     try {
-      final saved = await pFile!.attemptEncrypt();
-      if (!saved) debugPrint('Warning: encryption returned false on save.');
+      saved = await pFile!.attemptEncrypt();
     } catch (e) {
       debugPrint('Save error: $e');
+    }
+    if (!saved) {
+      _isClosing = false;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Save failed. Your vault is still open.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+      unawaited(_syncAutofillCache());
+      return;
     }
     // Dispose after encrypting — the in-memory DB and password bytes are no
     // longer needed. Mark the flag so the widget dispose() doesn't double-free.
@@ -874,7 +887,16 @@ class _CategoryListView extends StatelessWidget {
             masterPassword,
             item['password'] as String,
           );
-          Clipboard.setData(ClipboardData(text: plaintext));
+          if (plaintext == '[Decryption Error]') {
+            messenger.showSnackBar(
+              const SnackBar(
+                content: Text('Could not decrypt password'),
+                backgroundColor: Colors.redAccent,
+              ),
+            );
+            return;
+          }
+          await Clipboard.setData(ClipboardData(text: plaintext));
           if (settings.clearClipboardAfterCopy) {
             unawaited(_clearClipboardLater(plaintext));
           }

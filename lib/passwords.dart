@@ -8,6 +8,7 @@ import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:cryptography/cryptography.dart' as crypto;
 import 'package:crypto/crypto.dart' as dart_crypto;
+import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as sqlite;
 import 'package:typed_data/typed_buffers.dart';
 import 'globals.dart';
@@ -211,7 +212,7 @@ class passFile {
             KeyTitanNativeCore.instance?.encryptVault(rawBytes, _passwordBytes);
         if (nativeEncrypted != null) {
           try {
-            await File(fileName).writeAsBytes(nativeEncrypted);
+            await _writeVaultBytesAtomic(nativeEncrypted);
             isEncrypted = true;
             return true;
           } finally {
@@ -233,7 +234,7 @@ class passFile {
         out.setRange(16, 32, salt);
         out.setRange(32, out.length, cipherPayload);
 
-        await File(fileName).writeAsBytes(out);
+        await _writeVaultBytesAtomic(out);
 
         isEncrypted = true;
         return true;
@@ -243,6 +244,56 @@ class passFile {
     } catch (e) {
       debugPrint('Encryption error: $e');
       return false;
+    }
+  }
+
+  Future<void> _writeVaultBytesAtomic(Uint8List bytes) async {
+    final target = File(fileName);
+    final dir = target.parent;
+    await dir.create(recursive: true);
+
+    final baseName = p.basename(fileName);
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final temp = File(p.join(dir.path, '.$baseName.$stamp.tmp'));
+    final backup = File(p.join(dir.path, '.$baseName.$stamp.bak'));
+
+    try {
+      final raf = await temp.open(mode: FileMode.writeOnly);
+      try {
+        await raf.writeFrom(bytes);
+        await raf.flush();
+      } finally {
+        await raf.close();
+      }
+
+      final targetExists = await target.exists();
+      if (targetExists) {
+        await target.rename(backup.path);
+      }
+
+      try {
+        await temp.rename(target.path);
+      } catch (_) {
+        if (targetExists && await backup.exists()) {
+          await backup.rename(target.path);
+        }
+        rethrow;
+      }
+
+      if (await backup.exists()) {
+        try {
+          await backup.delete();
+        } catch (e) {
+          debugPrint('Could not remove vault save backup: $e');
+        }
+      }
+    } catch (_) {
+      if (await temp.exists()) {
+        try {
+          await temp.delete();
+        } catch (_) {}
+      }
+      rethrow;
     }
   }
 
@@ -313,52 +364,56 @@ class passFile {
   // ---------------------------------------------------------------------------
 
   Future<void> _loadDbFromBytes(Uint8List sqliteBytes) async {
-    await _withInMemorySqliteBytes(
-      sqliteBytes,
-      readOnly: true,
-      action: (srcDb) async {
-        final categories = srcDb.select(
-          'SELECT id, category FROM category ORDER BY id ASC',
-        );
-        final passwords = srcDb.select(
-          'SELECT id, title, site, category_id, username, password, '
-          '${_sqliteColumnExists(srcDb, 'password', 'uris') ? 'uris' : "'' AS uris"} '
-          'FROM password ORDER BY id ASC',
-        );
+    try {
+      await _withInMemorySqliteBytes(
+        sqliteBytes,
+        readOnly: true,
+        action: (srcDb) async {
+          final categories = srcDb.select(
+            'SELECT id, category FROM category ORDER BY id ASC',
+          );
+          final passwords = srcDb.select(
+            'SELECT id, title, site, category_id, username, password, '
+            '${_sqliteColumnExists(srcDb, 'password', 'uris') ? 'uris' : "'' AS uris"} '
+            'FROM password ORDER BY id ASC',
+          );
 
-        await _closeDb();
-        _db = await databaseFactoryFfi.openDatabase(
-          inMemoryDatabasePath,
-          options: OpenDatabaseOptions(version: 1, onCreate: _createSchema),
-        );
+          await _closeDb();
+          _db = await databaseFactoryFfi.openDatabase(
+            inMemoryDatabasePath,
+            options: OpenDatabaseOptions(version: 1, onCreate: _createSchema),
+          );
 
-        await _db!.transaction((txn) async {
-          for (final row in categories) {
-            await txn.insert(
-                'category',
-                {
-                  'id': row['id'],
-                  'category': row['category'],
-                },
-                conflictAlgorithm: ConflictAlgorithm.replace);
-          }
-          for (final row in passwords) {
-            await txn.insert(
-                'password',
-                {
-                  'id': row['id'],
-                  'title': row['title'],
-                  'site': row['site'],
-                  'category_id': row['category_id'],
-                  'username': row['username'],
-                  'password': row['password'],
-                  'uris': row['uris'],
-                },
-                conflictAlgorithm: ConflictAlgorithm.replace);
-          }
-        });
-      },
-    );
+          await _db!.transaction((txn) async {
+            for (final row in categories) {
+              await txn.insert(
+                  'category',
+                  {
+                    'id': row['id'],
+                    'category': row['category'],
+                  },
+                  conflictAlgorithm: ConflictAlgorithm.replace);
+            }
+            for (final row in passwords) {
+              await txn.insert(
+                  'password',
+                  {
+                    'id': row['id'],
+                    'title': row['title'],
+                    'site': row['site'],
+                    'category_id': row['category_id'],
+                    'username': row['username'],
+                    'password': row['password'],
+                    'uris': row['uris'],
+                  },
+                  conflictAlgorithm: ConflictAlgorithm.replace);
+            }
+          });
+        },
+      );
+    } finally {
+      sqliteBytes.fillRange(0, sqliteBytes.length, 0);
+    }
   }
 
   Future<Uint8List> _exportDbToBytes() async {
@@ -440,6 +495,9 @@ class passFile {
       return await action(db, vfs);
     } finally {
       db.close();
+      for (final buffer in vfs.fileData.values) {
+        buffer?.fillRange(0, buffer.length, 0);
+      }
       sqlite.sqlite3.unregisterVirtualFileSystem(vfs);
     }
   }

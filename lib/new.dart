@@ -4,6 +4,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'passwords.dart';
 import 'globals.dart';
+import 'vault_files.dart';
 
 class KeyTitanNew extends StatefulWidget {
   const KeyTitanNew(
@@ -66,8 +67,7 @@ class _KeyTitanNewState extends State<KeyTitanNew> {
     _passController.clear();
     _verifyController.clear();
 
-    // On Android, Platform.pathSeparator is '/' — same as p.join uses.
-    final fullPath = p.join(dir, '$name.ktn');
+    final fullPath = p.join(dir, '$name${KeyTitanVaultFiles.extension}');
     final pFile = passFile(fullPath, pass);
 
     await pFile.newSQLFile();
@@ -156,7 +156,7 @@ class _KeyTitanNewState extends State<KeyTitanNew> {
                 readOnly: true,
                 style: TextStyle(color: Constants.lightText),
                 decoration: InputDecoration(
-                  hintText: 'Loading default directory…',
+                  hintText: 'Loading default directory...',
                   hintStyle: TextStyle(
                       color: Constants.lightText.withValues(alpha: 0.5)),
                 ),
@@ -165,7 +165,7 @@ class _KeyTitanNewState extends State<KeyTitanNew> {
                     : null,
               ),
             ),
-            // Hide the directory picker on Android — the app-private dir is
+            // Hide the directory picker on Android - the app-private dir is
             // the only sensible location and the picker can't grant persistent
             // access to anything else.
             if (!Constants.isMobile)

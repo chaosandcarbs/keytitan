@@ -35,6 +35,7 @@ class KeyTitanSettingsData {
   final bool clearClipboardAfterCopy;
   final int clipboardClearDelaySeconds;
   final bool showPlaintextOnEdit;
+  final bool showAutofillUriOverrides;
   final int autofillAttemptWindowSeconds;
 
   const KeyTitanSettingsData({
@@ -42,6 +43,7 @@ class KeyTitanSettingsData {
     this.clearClipboardAfterCopy = true,
     this.clipboardClearDelaySeconds = 15,
     this.showPlaintextOnEdit = false,
+    this.showAutofillUriOverrides = false,
     this.autofillAttemptWindowSeconds = 30,
   });
 
@@ -50,6 +52,7 @@ class KeyTitanSettingsData {
     bool? clearClipboardAfterCopy,
     int? clipboardClearDelaySeconds,
     bool? showPlaintextOnEdit,
+    bool? showAutofillUriOverrides,
     int? autofillAttemptWindowSeconds,
   }) {
     return KeyTitanSettingsData(
@@ -59,6 +62,8 @@ class KeyTitanSettingsData {
       clipboardClearDelaySeconds:
           clipboardClearDelaySeconds ?? this.clipboardClearDelaySeconds,
       showPlaintextOnEdit: showPlaintextOnEdit ?? this.showPlaintextOnEdit,
+      showAutofillUriOverrides:
+          showAutofillUriOverrides ?? this.showAutofillUriOverrides,
       autofillAttemptWindowSeconds:
           autofillAttemptWindowSeconds ?? this.autofillAttemptWindowSeconds,
     );
@@ -87,6 +92,7 @@ class KeyTitanSettingsData {
       clipboardClearDelaySeconds:
           clipboardDelayOptions.contains(parsedDelayInt) ? parsedDelayInt! : 15,
       showPlaintextOnEdit: json['showPlaintextOnEdit'] == true,
+      showAutofillUriOverrides: json['showAutofillUriOverrides'] == true,
       autofillAttemptWindowSeconds:
           autofillAttemptWindowOptions.contains(parsedAutofillWindowInt)
               ? parsedAutofillWindowInt!
@@ -102,6 +108,7 @@ class KeyTitanSettingsData {
       'clearClipboardAfterCopy': clearClipboardAfterCopy,
       'clipboardClearDelaySeconds': clipboardClearDelaySeconds,
       'showPlaintextOnEdit': showPlaintextOnEdit,
+      'showAutofillUriOverrides': showAutofillUriOverrides,
       'autofillAttemptWindowSeconds': autofillAttemptWindowSeconds,
     };
   }
@@ -149,8 +156,49 @@ class KeyTitanSettingsStore {
   }
 
   static Future<File> _settingsFile() async {
-    final dir = await getApplicationDocumentsDirectory();
+    final dir = await _settingsDirectory();
     return File(p.join(dir.path, _settingsFileName));
+  }
+
+  static Future<Directory> _settingsDirectory() async {
+    // Desktop settings live in config/support storage, away from vault files.
+    if (Platform.isWindows) {
+      final appData = Platform.environment['APPDATA'];
+      if (_hasPath(appData)) return Directory(p.join(appData!, 'keytitan'));
+      return _applicationSupportDirectory();
+    }
+
+    if (Platform.isLinux) {
+      final xdgConfigHome = Platform.environment['XDG_CONFIG_HOME'];
+      if (_hasPath(xdgConfigHome)) {
+        return Directory(p.join(xdgConfigHome!, 'keytitan'));
+      }
+
+      final home = Platform.environment['HOME'];
+      if (_hasPath(home)) {
+        return Directory(p.join(home!, '.config', 'keytitan'));
+      }
+      return _applicationSupportDirectory();
+    }
+
+    // Android vaults already live in app-private documents storage.
+    if (Platform.isAndroid) {
+      return getApplicationDocumentsDirectory();
+    }
+
+    if (Platform.isMacOS || Platform.isIOS) {
+      return _applicationSupportDirectory();
+    }
+
+    return _applicationSupportDirectory();
+  }
+
+  static Future<Directory> _applicationSupportDirectory() {
+    return getApplicationSupportDirectory();
+  }
+
+  static bool _hasPath(String? value) {
+    return value != null && value.trim().isNotEmpty;
   }
 }
 
@@ -322,6 +370,18 @@ class _KeyTitanSettingsState extends State<KeyTitanSettings> {
                         onChanged: (value) {
                           _updateSettings(
                             _settings.copyWith(showPlaintextOnEdit: value),
+                          );
+                        },
+                      ),
+                      SwitchListTile(
+                        value: _settings.showAutofillUriOverrides,
+                        title: const Text('Show additional autofill URIs'),
+                        contentPadding: EdgeInsets.zero,
+                        onChanged: (value) {
+                          _updateSettings(
+                            _settings.copyWith(
+                              showAutofillUriOverrides: value,
+                            ),
                           );
                         },
                       ),

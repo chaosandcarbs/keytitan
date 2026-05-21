@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:io';
 
-// Named route constants — centralised here to avoid string literals scattered
+// Named route constants - centralised here to avoid string literals scattered
 // across the codebase.
 class KeyTitan {
   static const String home = '/';
@@ -14,7 +14,7 @@ class KeyTitan {
 }
 
 // Metadata for the home-screen menu cards. Adding a new card only requires
-// a new enum value here — the build method in main.dart iterates the list
+// a new enum value here - the build method in main.dart iterates the list
 // automatically.
 enum CardInfo {
   newFile(
@@ -64,10 +64,11 @@ class Constants {
   static const Color dialogColor = Color.fromARGB(255, 40, 60, 80);
   static const Color lightText = Colors.white70;
 
+  static bool get isDesktop =>
+      Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+
   // True when running on a touch-first device.
   static bool get isMobile => Platform.isAndroid || Platform.isIOS;
-
-  static double actionRowHeight = 48.0;
 
   static final BoxDecoration backgroundDecoration = BoxDecoration(
     color: backColor,
@@ -93,7 +94,6 @@ class Constants {
   // --- Layout & spacing (set per-platform in main.dart) ---
   static double cardHeight = 120.0;
   static double cardSepHeight = 20.0;
-  static double cardIconSpacing = 20.0;
   static double cardIconSize = 24.0;
   static const double footerButtonSize = 32.0;
 

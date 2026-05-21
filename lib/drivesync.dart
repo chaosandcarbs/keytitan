@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'globals.dart';
 import 'secstore.dart';
+import 'vault_files.dart';
 
 class KeyTitanSync extends StatefulWidget {
   const KeyTitanSync({
@@ -61,7 +62,7 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
   // on desktop it checks whether credentials are stored in the keychain.
   Future<void> _checkExistingAuth() async {
     final signedIn = await _googleDrive.isSignedIn();
-    if (signedIn) {
+    if (signedIn && mounted) {
       setState(() => _isAuthenticated = true);
       _refreshDriveFiles();
     }
@@ -72,8 +73,12 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
     try {
       final client = await _googleDrive.getHttpClient();
       if (client == null) {
-        // User cancelled or auth failed — do not mark as authenticated.
+        // User cancelled or auth failed - do not mark as authenticated.
         setState(() => _isAuthenticating = false);
+        final error = _googleDrive.lastAuthError;
+        if (error != null && mounted) {
+          _showSnackBar(error);
+        }
         return;
       }
       setState(() {
@@ -147,8 +152,7 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
       setState(() {
         _pathController.text = dirPath;
         _localFiles = entities.whereType<File>().where((f) {
-          final ext = p.extension(f.path).toLowerCase();
-          return ext == '.ktn' || ext == '.pass';
+          return KeyTitanVaultFiles.hasVaultExtension(f.path);
         }).toList();
       });
     }
@@ -243,7 +247,7 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
       localDir = _pathController.text;
     }
 
-    _showSnackBar('Downloading ${driveFile.name}…');
+    _showSnackBar('Downloading ${driveFile.name}...');
     final result = await _googleDrive.downloadFileFromDrive(
       driveFile.id!,
       driveFile.name!,

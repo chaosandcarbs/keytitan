@@ -7,10 +7,8 @@ back to the Dart implementation when it is not present.
 The native core currently handles:
 
 - `.ktn` v3 ChaCha20-Poly1305 vault encryption/decryption
-- legacy v2 Salsa20 vault decryption
 - Argon2id key derivation for vault files
 - per-entry ChaCha20-Poly1305 encryption/decryption
-- legacy per-entry AES-CBC decryption
 - URI derivation for web and Android autofill matching
 
 SQLite stays memory-only in Dart for now. That keeps current Windows, Linux, and

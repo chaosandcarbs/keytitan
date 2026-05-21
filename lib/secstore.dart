@@ -11,9 +11,10 @@ import 'package:googleapis/drive/v3.dart' as ga;
 import 'package:path/path.dart' as p;
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'vault_files.dart';
 
 // ---------------------------------------------------------------------------
-// SecureStorage — persists desktop OAuth credentials across sessions.
+// SecureStorage - persists desktop OAuth credentials across sessions.
 // On mobile, google_sign_in manages its own token lifecycle via the platform
 // SDK, so we only use this store for the desktop flow.
 // ---------------------------------------------------------------------------
@@ -60,8 +61,8 @@ class SecureStorage {
 }
 
 // ---------------------------------------------------------------------------
-// GoogleDrive — authentication, listing, uploading, and downloading
-// .ktn / .pass backup files from the "KeyTitanBackup" Drive folder.
+// GoogleDrive - authentication, listing, uploading, and downloading
+// .ktn backup files from the "KeyTitanBackup" Drive folder.
 //
 // Android/iOS: uses google_sign_in (Android Credential Manager / Google
 //   Identity Services), which is Google's recommended approach for mobile.
@@ -85,6 +86,9 @@ class GoogleDrive {
   // Cached authenticated client so repeated calls within a session do not
   // re-trigger the OAuth consent flow.
   http.Client? _cachedClient;
+  String? _lastAuthError;
+
+  String? get lastAuthError => _lastAuthError;
 
   // Initialises the google_sign_in singleton once.
   // On Android, Credential Manager requires serverClientId to be a Web
@@ -111,6 +115,7 @@ class GoogleDrive {
   // The result is cached so subsequent calls within the same session reuse
   // the existing client and never re-trigger the OAuth consent flow.
   Future<http.Client?> getHttpClient() async {
+    _lastAuthError = null;
     if (_cachedClient != null) return _cachedClient;
     if (Platform.isAndroid || Platform.isIOS) {
       _cachedClient = await _getMobileClient();
@@ -140,15 +145,20 @@ class GoogleDrive {
       await _ensureGsiInitialized();
       // attemptLightweightAuthentication returns non-null when a cached
       // session exists and never shows any UI.
-      final account =
-          await GoogleSignIn.instance.attemptLightweightAuthentication();
-      return account != null;
+      try {
+        final account =
+            await GoogleSignIn.instance.attemptLightweightAuthentication();
+        return account != null;
+      } on GoogleSignInException catch (e) {
+        debugPrint('OAuth mobile lightweight auth check failed: $e');
+        return false;
+      }
     }
     return (await storage.getCredentials()) != null;
   }
 
   // ---------------------------------------------------------------------------
-  // Mobile authentication — Google Identity Services via google_sign_in
+  // Mobile authentication - Google Identity Services via google_sign_in
   // ---------------------------------------------------------------------------
 
   Future<http.Client?> _getMobileClient() async {
@@ -156,35 +166,91 @@ class GoogleDrive {
       await _ensureGsiInitialized();
       final gsi = GoogleSignIn.instance;
 
-      // Try a lightweight (silent) sign-in first to avoid unnecessary prompts.
-      GoogleSignInAccount? account =
-          await gsi.attemptLightweightAuthentication();
-
-      // If no cached session, start the interactive sign-in flow.
-      if (account == null && gsi.supportsAuthenticate()) {
-        account = await gsi.authenticate();
-      }
+      final account = await _authenticateMobileAccount(gsi);
 
       if (account == null) {
+        _lastAuthError = 'Google sign-in was cancelled or unavailable.';
         debugPrint('OAuth mobile: user cancelled or platform unsupported');
         return null;
       }
 
-      // authorizeScopes ensures the Drive scopes are granted and returns an
-      // authorization object we can convert to an AuthClient.
       final authorization =
-          await account.authorizationClient.authorizeScopes(_scopes);
+          await account.authorizationClient.authorizationForScopes(_scopes) ??
+              await account.authorizationClient.authorizeScopes(_scopes);
 
       // The extension bridge produces a googleapis_auth-compatible AuthClient.
       return authorization.authClient(scopes: _scopes);
+    } on GoogleSignInException catch (e) {
+      _lastAuthError = _googleSignInErrorMessage(e);
+      debugPrint('OAuth mobile error: $e');
+      return null;
     } catch (e) {
+      _lastAuthError = 'Google Drive authentication failed.';
       debugPrint('OAuth mobile error: $e');
       return null;
     }
   }
 
+  Future<GoogleSignInAccount?> _authenticateMobileAccount(
+    GoogleSignIn gsi,
+  ) async {
+    try {
+      return await _authenticateMobileAccountOnce(gsi, tryLightweight: true);
+    } on GoogleSignInException catch (e) {
+      if (!_looksLikeCredentialReauthFailure(e)) rethrow;
+
+      // Android Credential Manager can retain stale credential state across
+      // reinstalls/signature changes. Clear it once and retry the button flow.
+      debugPrint('OAuth mobile reauth failed; clearing credential state.');
+      await gsi.signOut();
+      return _authenticateMobileAccountOnce(gsi, tryLightweight: false);
+    }
+  }
+
+  Future<GoogleSignInAccount?> _authenticateMobileAccountOnce(
+    GoogleSignIn gsi, {
+    required bool tryLightweight,
+  }) async {
+    GoogleSignInAccount? account;
+    if (tryLightweight) {
+      account = await gsi.attemptLightweightAuthentication(
+        reportAllExceptions: true,
+      );
+    }
+
+    if (account == null && gsi.supportsAuthenticate()) {
+      account = await gsi.authenticate(scopeHint: _scopes);
+    }
+
+    return account;
+  }
+
+  bool _looksLikeCredentialReauthFailure(GoogleSignInException e) {
+    final description = e.description?.toLowerCase() ?? '';
+    return e.code == GoogleSignInExceptionCode.canceled &&
+        (description.contains('reauth') || description.contains('[16]'));
+  }
+
+  String _googleSignInErrorMessage(GoogleSignInException e) {
+    if (_looksLikeCredentialReauthFailure(e)) {
+      return 'Google sign-in reauth failed. Verify the Android OAuth client '
+          'uses package app.keytitan and the SHA-1 for this signing key.';
+    }
+    if (e.code == GoogleSignInExceptionCode.canceled) {
+      return 'Google sign-in was cancelled. If this happened after choosing '
+          'an account, check the Android OAuth package name, SHA-1, and web '
+          'server client ID.';
+    }
+    if (e.code == GoogleSignInExceptionCode.clientConfigurationError ||
+        e.code == GoogleSignInExceptionCode.providerConfigurationError) {
+      return 'Google sign-in is not configured correctly. Check the Android '
+          'OAuth package name, signing SHA-1, and web server client ID.';
+    }
+    return 'Google sign-in failed: ${e.code.name}.';
+  }
+
   // ---------------------------------------------------------------------------
-  // Desktop authentication — googleapis_auth localhost redirect server
+  // Desktop authentication - googleapis_auth localhost redirect server
   // ---------------------------------------------------------------------------
 
   Future<http.Client?> _getDesktopClient() async {
@@ -219,7 +285,7 @@ class GoogleDrive {
   // Drive operations
   // ---------------------------------------------------------------------------
 
-  // Returns all .ktn and .pass files in the KeyTitanBackup Drive folder.
+  // Returns .ktn files in the KeyTitanBackup Drive folder.
   Future<List<ga.File>> listDriveFiles() async {
     final client = await getHttpClient();
     if (client == null) return [];
@@ -229,13 +295,19 @@ class GoogleDrive {
     if (folderId == null) return [];
 
     final query = "'$folderId' in parents and trashed = false "
-        "and (name contains '.pass' or name contains '.ktn')";
+        "and name contains '${KeyTitanVaultFiles.extension}'";
 
     final response = await api.files.list(
       q: query,
       $fields: 'files(id, name, size, modifiedTime)',
     );
-    return response.files ?? [];
+    return (response.files ?? [])
+        .where(
+          (file) =>
+              file.name != null &&
+              KeyTitanVaultFiles.hasVaultExtension(file.name!),
+        )
+        .toList();
   }
 
   // Uploads a local file to the KeyTitanBackup folder. If a file with the
@@ -310,17 +382,7 @@ class GoogleDrive {
   }
 
   String? _safeDriveFileName(String fileName) {
-    final trimmed = fileName.trim();
-    if (trimmed.isEmpty) return null;
-    if (RegExp(r'[<>:"/\\|?*\x00-\x1F]').hasMatch(trimmed)) return null;
-
-    final extension = p.extension(trimmed).toLowerCase();
-    if (extension != '.ktn' && extension != '.pass' && extension != '.hydra') {
-      return null;
-    }
-
-    final baseName = p.basename(trimmed);
-    return baseName == trimmed ? baseName : null;
+    return KeyTitanVaultFiles.safeFileName(fileName);
   }
 
   // Finds the KeyTitanBackup folder in Drive, creating it if it doesn't exist.

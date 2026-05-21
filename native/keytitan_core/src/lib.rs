@@ -1,13 +1,9 @@
-use aes::Aes256;
 use argon2::{Algorithm, Argon2, Params, Version};
 use base64::{engine::general_purpose, Engine as _};
-use cbc::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     ChaCha20Poly1305, Nonce,
 };
-use cipher::StreamCipher;
-use salsa20::Salsa20;
 use sha2::{Digest, Sha256};
 use std::{panic, ptr, slice};
 use zeroize::Zeroize;
@@ -15,8 +11,6 @@ use zeroize::Zeroize;
 const KTN3_MAGIC: &[u8; 4] = b"KTN3";
 const SQLITE_HEADER: &[u8; 16] = b"SQLite format 3\0";
 const FIELD_PREFIX: &str = "c20p1";
-
-type Aes256CbcDec = cbc::Decryptor<Aes256>;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -180,36 +174,20 @@ fn write_output(
 }
 
 fn decrypt_vault_bytes(input: &[u8], password: &[u8]) -> Result<Vec<u8>, KtnStatus> {
-    if input.len() >= 49 && input.starts_with(KTN3_MAGIC) {
-        let nonce = &input[4..16];
-        let salt = &input[16..32];
-        let payload = &input[32..];
-        let mut key = derive_argon2id_key(password, salt)?;
-        let decrypted = decrypt_chacha20_poly1305(&key, nonce, payload);
-        key.zeroize();
-        let decrypted = decrypted?;
-        if is_sqlite_bytes(&decrypted) {
-            return Ok(decrypted);
-        }
+    if input.len() < 49 || !input.starts_with(KTN3_MAGIC) {
         return Err(KtnStatus::InvalidInput);
     }
 
-    if input.len() >= 25 {
-        let iv = &input[0..8];
-        let salt = &input[8..24];
-        let payload = &input[24..];
-        let mut key = derive_argon2id_key(password, salt)?;
-        let mut decrypted = payload.to_vec();
-        let result = Salsa20::new_from_slices(&key, iv)
-            .map_err(|_| KtnStatus::CryptoError)
-            .map(|mut cipher| cipher.apply_keystream(&mut decrypted));
-        key.zeroize();
-        result?;
-        if is_sqlite_bytes(&decrypted) {
-            return Ok(decrypted);
-        }
+    let nonce = &input[4..16];
+    let salt = &input[16..32];
+    let payload = &input[32..];
+    let mut key = derive_argon2id_key(password, salt)?;
+    let decrypted = decrypt_chacha20_poly1305(&key, nonce, payload);
+    key.zeroize();
+    let decrypted = decrypted?;
+    if is_sqlite_bytes(&decrypted) {
+        return Ok(decrypted);
     }
-
     Err(KtnStatus::InvalidInput)
 }
 
@@ -296,10 +274,10 @@ fn field_decrypt(password: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, KtnStatu
         return Ok(Vec::new());
     }
     let text = std::str::from_utf8(ciphertext).map_err(|_| KtnStatus::InvalidInput)?;
-    if text.starts_with(&format!("{}:", FIELD_PREFIX)) {
-        return field_decrypt_chacha20(password, text);
+    if !text.starts_with(&format!("{}:", FIELD_PREFIX)) {
+        return Err(KtnStatus::InvalidInput);
     }
-    field_decrypt_legacy_aes_cbc(password, text)
+    field_decrypt_chacha20(password, text)
 }
 
 fn field_decrypt_chacha20(password: &[u8], text: &str) -> Result<Vec<u8>, KtnStatus> {
@@ -319,42 +297,11 @@ fn field_decrypt_chacha20(password: &[u8], text: &str) -> Result<Vec<u8>, KtnSta
     decrypted
 }
 
-fn field_decrypt_legacy_aes_cbc(password: &[u8], text: &str) -> Result<Vec<u8>, KtnStatus> {
-    let parts: Vec<&str> = text.split(':').collect();
-    if parts.len() != 2 {
-        return Err(KtnStatus::InvalidInput);
-    }
-    let iv = general_purpose::STANDARD
-        .decode(parts[0])
-        .map_err(|_| KtnStatus::InvalidInput)?;
-    let encrypted = general_purpose::STANDARD
-        .decode(parts[1])
-        .map_err(|_| KtnStatus::InvalidInput)?;
-    let mut key = derive_legacy_aes_key(password);
-    let decrypted = Aes256CbcDec::new_from_slices(&key, &iv)
-        .map_err(|_| KtnStatus::CryptoError)?
-        .decrypt_padded_vec_mut::<Pkcs7>(&encrypted)
-        .map_err(|_| KtnStatus::CryptoError);
-    key.zeroize();
-    decrypted
-}
-
 fn derive_field_key(password: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"KeyTitan field encryption v1");
     hasher.update(password);
     hasher.finalize().into()
-}
-
-fn derive_legacy_aes_key(password: &[u8]) -> [u8; 32] {
-    let mut key = [0u8; 32];
-    if password.is_empty() {
-        return key;
-    }
-    for (index, byte) in key.iter_mut().enumerate() {
-        *byte = password[index % password.len()];
-    }
-    key
 }
 
 fn derive_uris(site: &str) -> String {
@@ -467,6 +414,13 @@ mod tests {
         let decrypted = field_decrypt(password, encrypted.as_bytes()).unwrap();
         assert_eq!(decrypted, b"entry-password");
         assert!(field_decrypt(b"wrong", encrypted.as_bytes()).is_err());
+    }
+
+    #[test]
+    fn vault_decrypt_rejects_non_v3_input() {
+        let mut old_shape = vec![0u8; 25];
+        old_shape[0..16].copy_from_slice(SQLITE_HEADER);
+        assert!(decrypt_vault_bytes(&old_shape, b"password").is_err());
     }
 
     #[test]

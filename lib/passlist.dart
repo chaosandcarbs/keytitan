@@ -46,6 +46,18 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
   bool _pFileDisposed = false;
   KeyTitanSettingsData _settings = const KeyTitanSettingsData();
 
+  List<TextEditingController> get _dialogControllers => [
+        headCon,
+        idCon,
+        titleCon,
+        siteCon,
+        uriCon,
+        catCon,
+        userCon,
+        passCon,
+        complexityCon,
+      ];
+
   @override
   void initState() {
     super.initState();
@@ -81,10 +93,9 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     passCon.dispose();
     complexityCon.dispose();
     _refreshTrigger.dispose();
-    // Only dispose pFile if it hasn't already been disposed by saveAndClose
-    // or closeWithoutSaving. Using a dedicated flag avoids double-dispose.
+    // State.dispose cannot await; save/close paths await disposal before leaving.
     if (!_pFileDisposed) {
-      pFile?.dispose();
+      unawaited(pFile?.dispose());
     }
     unawaited(KeyTitanAutofillBridge.clearEntries());
     super.dispose();
@@ -93,15 +104,9 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
   // Overwrites all sensitive dialog controllers with empty strings so
   // plaintext does not linger in memory any longer than necessary.
   void _clearAllControllers() {
-    headCon.text = '';
-    idCon.text = '';
-    titleCon.text = '';
-    siteCon.text = '';
-    uriCon.text = '';
-    catCon.text = '';
-    userCon.text = '';
-    passCon.text = '';
-    complexityCon.text = '';
+    for (final controller in _dialogControllers) {
+      controller.clear();
+    }
   }
 
   // Called when the user clicks the native window close button on desktop.
@@ -191,7 +196,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
 
     final plaintext =
         await keyTitanPass.hdecrypt(file.passwordBytes, ciphertext);
-    if (plaintext == '[Decryption Error]') return null;
+    if (plaintext == keyTitanPass.decryptionError) return null;
     return plaintext;
   }
 
@@ -215,15 +220,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
   // ---------------------------------------------------------------------------
 
   Future<void> _createPassword() async {
-    await pFile!.savePassword(keyTitanPass(
-      id: -1,
-      title: titleCon.text,
-      site: siteCon.text,
-      uris: uriCon.text,
-      category: catCon.text,
-      username: userCon.text,
-      displayPassword: passCon.text,
-    ));
+    await pFile!.savePassword(_passwordFromControllers(id: -1));
     // Zero the password field immediately after the encrypted copy is written.
     passCon.text = '';
     _triggerRefresh();
@@ -231,19 +228,24 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
   }
 
   Future<void> _updatePassword() async {
-    await pFile!.savePassword(keyTitanPass(
-      id: int.parse(idCon.text),
+    await pFile!
+        .savePassword(_passwordFromControllers(id: int.parse(idCon.text)));
+    // Zero the password field immediately after the encrypted copy is written.
+    passCon.text = '';
+    _triggerRefresh();
+    if (mounted) Navigator.of(context, rootNavigator: true).pop();
+  }
+
+  keyTitanPass _passwordFromControllers({required int id}) {
+    return keyTitanPass(
+      id: id,
       title: titleCon.text,
       site: siteCon.text,
       uris: uriCon.text,
       category: catCon.text,
       username: userCon.text,
       displayPassword: passCon.text,
-    ));
-    // Zero the password field immediately after the encrypted copy is written.
-    passCon.text = '';
-    _triggerRefresh();
-    if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    );
   }
 
   Future<void> _deletePassword(int id) async {
@@ -277,7 +279,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
       unawaited(_syncAutofillCache());
       return;
     }
-    // Dispose after encrypting — the in-memory DB and password bytes are no
+    // Dispose after encrypting - the in-memory DB and password bytes are no
     // longer needed. Mark the flag so the widget dispose() doesn't double-free.
     try {
       await pFile?.dispose();
@@ -334,6 +336,144 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     );
   }
 
+  Future<void> _showChangeVaultPasswordDialog() async {
+    final currentCon = TextEditingController();
+    final newCon = TextEditingController();
+    final verifyCon = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+    final pageContext = context;
+    var isSaving = false;
+
+    try {
+      await showDialog(
+        context: pageContext,
+        barrierDismissible: false,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            return AlertDialog(
+              scrollable: true,
+              backgroundColor: Constants.dialogColor,
+              title: const Text('Change Vault Password'),
+              content: Form(
+                key: formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextFormField(
+                      controller: currentCon,
+                      autofocus: true,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Current vault password',
+                      ),
+                      validator: (value) => value == null || value.isEmpty
+                          ? 'Current password is required'
+                          : null,
+                    ),
+                    const SizedBox(height: 14),
+                    TextFormField(
+                      controller: newCon,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'New vault password',
+                      ),
+                      validator: (value) => value == null || value.isEmpty
+                          ? 'New password is required'
+                          : null,
+                    ),
+                    const SizedBox(height: 14),
+                    TextFormField(
+                      controller: verifyCon,
+                      obscureText: true,
+                      decoration: const InputDecoration(
+                        labelText: 'Confirm new password',
+                      ),
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Confirm the new password';
+                        }
+                        if (value != newCon.text) {
+                          return 'Passwords do not match';
+                        }
+                        return null;
+                      },
+                    ),
+                    if (isSaving) ...[
+                      const SizedBox(height: 20),
+                      const CircularProgressIndicator(),
+                    ],
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed:
+                      isSaving ? null : () => Navigator.pop(dialogContext),
+                  child: const Text('Cancel'),
+                ),
+                ElevatedButton.icon(
+                  icon: const Icon(Icons.key),
+                  label: const Text('Change'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: Constants.cardColor,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 18,
+                      vertical: 14,
+                    ),
+                  ),
+                  onPressed: isSaving
+                      ? null
+                      : () async {
+                          if (!formKey.currentState!.validate()) return;
+                          setDialogState(() => isSaving = true);
+                          final navigator = Navigator.of(dialogContext);
+                          final messenger = ScaffoldMessenger.of(pageContext);
+
+                          final changed = await pFile!.changeMasterPassword(
+                            currentPassword: currentCon.text,
+                            newPassword: newCon.text,
+                          );
+
+                          if (!mounted) return;
+                          if (changed) {
+                            navigator.pop();
+                            messenger.showSnackBar(
+                              const SnackBar(
+                                content:
+                                    Text('Vault password changed and saved.'),
+                              ),
+                            );
+                          } else {
+                            setDialogState(() => isSaving = false);
+                            messenger.showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Could not change vault password.',
+                                ),
+                                backgroundColor: Colors.redAccent,
+                              ),
+                            );
+                          }
+                        },
+                ),
+              ],
+            );
+          },
+        ),
+      );
+    } finally {
+      currentCon.clear();
+      newCon.clear();
+      verifyCon.clear();
+      // Let the dialog reverse animation finish before disposing controllers.
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      currentCon.dispose();
+      newCon.dispose();
+      verifyCon.dispose();
+    }
+  }
+
   // Shows the add/edit dialog and zeros all sensitive controllers when it
   // closes, regardless of whether the user submitted or cancelled.
   Future<void> _showPasswordDialog({bool edit = false}) async {
@@ -347,8 +487,8 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     int passLength = Constants.defaultPassLength;
 
     // Pre-populate the category drop-down with existing categories.
-    final List<DropdownMenuEntry> categoryOptions = [
-      const DropdownMenuEntry(value: 0, label: ''),
+    final List<DropdownMenuEntry<dynamic>> categoryOptions = [
+      const DropdownMenuEntry<dynamic>(value: 0, label: ''),
     ];
     final existing = await pFile!.getCategories();
     for (final cat in existing) {
@@ -387,198 +527,246 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
               color: Constants.lightText,
             ),
           ),
-          content: Form(
-            key: formKey,
-            child: StatefulBuilder(
-              builder: (context, setDialogState) {
-                final height = MediaQuery.of(context).size.height;
-                final width = MediaQuery.of(context).size.width;
+          content: StatefulBuilder(
+            builder: (context, setDialogState) {
+              final media = MediaQuery.of(context);
+              final maxHeight =
+                  media.size.height * (Constants.isMobile ? 0.66 : 0.74);
+              final maxDialogWidth =
+                  media.size.width * (Constants.isMobile ? 0.86 : 0.8);
+              final dialogWidth = maxDialogWidth > 520 ? 520.0 : maxDialogWidth;
+              const gap = SizedBox(height: 14);
 
-                return SizedBox(
-                  height: height * 0.70,
-                  width: width * 0.8,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      TextFormField(
-                        controller: titleCon,
-                        decoration: const InputDecoration(
-                          hintText: 'Title For Entry',
-                          label: Text('Title'),
-                        ),
-                        validator: (v) => (v == null || v.isEmpty)
-                            ? 'Title is required'
-                            : null,
-                      ),
-                      TextFormField(
-                        controller: siteCon,
-                        decoration: const InputDecoration(
-                          hintText: 'Site or App Name',
-                          label: Text('Site Name'),
-                        ),
-                        validator: (v) => (v == null || v.isEmpty)
-                            ? 'Site is required'
-                            : null,
-                      ),
-                      TextFormField(
-                        controller: uriCon,
-                        minLines: 1,
-                        maxLines: 2,
-                        decoration: const InputDecoration(
-                          hintText:
-                              'Optional: extra autofill URIs, androidapp://...',
-                          label: Text('Autofill URIs'),
-                        ),
-                      ),
-                      // Category: pick an existing one or type a new one.
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
+              return Form(
+                key: formKey,
+                child: SizedBox(
+                  width: dialogWidth,
+                  child: ConstrainedBox(
+                    constraints: BoxConstraints(maxHeight: maxHeight),
+                    child: SingleChildScrollView(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        mainAxisSize: MainAxisSize.min,
                         children: [
-                          Expanded(
-                            flex: 5,
-                            child: DropdownMenu(
-                              dropdownMenuEntries: categoryOptions,
-                              hintText: 'Category',
-                              label: const Text('Select Category'),
-                              width: width * .39,
-                              controller: catCon,
+                          TextFormField(
+                            controller: titleCon,
+                            decoration: const InputDecoration(
+                              hintText: 'Title For Entry',
+                              label: Text('Title'),
                             ),
+                            validator: (v) => (v == null || v.isEmpty)
+                                ? 'Title is required'
+                                : null,
                           ),
-                          const Text('  OR  '),
-                          Expanded(
-                            flex: 4,
-                            child: TextFormField(
-                              controller: catCon,
+                          gap,
+                          TextFormField(
+                            controller: siteCon,
+                            decoration: const InputDecoration(
+                              hintText: 'Site or App Name',
+                              label: Text('Site Name'),
+                            ),
+                            validator: (v) => (v == null || v.isEmpty)
+                                ? 'Site is required'
+                                : null,
+                          ),
+                          if (_settings.showAutofillUriOverrides) ...[
+                            gap,
+                            TextFormField(
+                              controller: uriCon,
+                              minLines: 1,
+                              maxLines: 3,
                               decoration: const InputDecoration(
-                                hintText: 'New Category',
-                                label: Text('New Category'),
+                                hintText:
+                                    'Optional: extra autofill URIs, androidapp://...',
+                                label: Text('Autofill URIs'),
                               ),
                             ),
+                          ],
+                          gap,
+                          _buildCategoryInputs(categoryOptions, dialogWidth),
+                          gap,
+                          TextFormField(
+                            controller: userCon,
+                            decoration: const InputDecoration(
+                              hintText: 'Username',
+                              label: Text('Username'),
+                            ),
+                            validator: (v) => (v == null || v.isEmpty)
+                                ? 'Username is required'
+                                : null,
                           ),
-                        ],
-                      ),
-                      TextFormField(
-                        controller: userCon,
-                        decoration: const InputDecoration(
-                            hintText: 'Username', label: Text('Username')),
-                        validator: (v) => (v == null || v.isEmpty)
-                            ? 'Username is required'
-                            : null,
-                      ),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.center,
-                        children: [
-                          Expanded(
-                            flex: 5,
-                            child: TextFormField(
-                              controller: passCon,
-                              obscureText:
-                                  !(edit && _settings.showPlaintextOnEdit),
-                              decoration: const InputDecoration(
-                                hintText: 'Enter or generate a password',
-                                label: Text('Password'),
+                          gap,
+                          TextFormField(
+                            controller: passCon,
+                            obscureText:
+                                !(edit && _settings.showPlaintextOnEdit),
+                            decoration: const InputDecoration(
+                              hintText: 'Enter or generate a password',
+                              label: Text('Password'),
+                              suffixIcon: Tooltip(
+                                message:
+                                    'Use the slider and complexity selector below to generate a random password.',
+                                triggerMode: TooltipTriggerMode.tap,
+                                showDuration: Duration(seconds: 5),
+                                child: Icon(Icons.info_outline),
                               ),
-                              validator: (v) => (v == null || v.isEmpty)
-                                  ? 'Password is required'
-                                  : null,
+                            ),
+                            validator: (v) => (v == null || v.isEmpty)
+                                ? 'Password is required'
+                                : null,
+                          ),
+                          gap,
+                          _buildComplexityPicker(
+                            complexityOptions,
+                            dialogWidth,
+                          ),
+                          SliderTheme(
+                            data: const SliderThemeData(
+                              showValueIndicator:
+                                  ShowValueIndicator.onlyForDiscrete,
+                            ),
+                            child: Slider(
+                              value: passLength.toDouble(),
+                              label: 'Length: $passLength',
+                              min: Constants.minPassLength.toDouble(),
+                              max: Constants.maxPassLength.toDouble(),
+                              divisions: Constants.maxPassLength -
+                                  Constants.minPassLength,
+                              thumbColor: Colors.white,
+                              activeColor: Constants.lightText,
+                              onChanged: (value) {
+                                setDialogState(() {
+                                  passLength = value.toInt();
+                                  passCon.text = keyTitanPass.genPassword(
+                                    Complexity.getComplexity(
+                                      complexityCon.text,
+                                    ),
+                                    passLength,
+                                  );
+                                });
+                              },
                             ),
                           ),
-                          Expanded(
-                            flex: 1,
-                            child: Tooltip(
-                              message:
-                                  'Use the slider and complexity selector below to generate a random password.',
-                              triggerMode: TooltipTriggerMode.tap,
-                              showDuration: const Duration(seconds: 5),
-                              child: const Icon(Icons.info),
+                          const SizedBox(height: 10),
+                          Align(
+                            child: ElevatedButton(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.white,
+                                foregroundColor: Constants.cardColor,
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 16,
+                                ),
+                              ),
+                              onPressed: () {
+                                if (formKey.currentState!.validate()) {
+                                  edit ? _updatePassword() : _createPassword();
+                                }
+                              },
+                              child: Text(edit ? 'Update!' : 'Create!'),
                             ),
                           ),
                         ],
                       ),
-                      Row(
-                        children: [
-                          Expanded(
-                            flex: 5,
-                            child: DropdownMenu(
-                              dropdownMenuEntries: complexityOptions,
-                              initialSelection: 1,
-                              label: const Text('Password Complexity'),
-                              controller: complexityCon,
-                            ),
-                          ),
-                          Expanded(
-                            flex: 1,
-                            child: Tooltip(
-                              message:
-                                  'Use the highest complexity your site allows.\nLudicrous mode: all printable ASCII characters.',
-                              triggerMode: TooltipTriggerMode.tap,
-                              showDuration: const Duration(seconds: 5),
-                              child: const Icon(Icons.info),
-                            ),
-                          ),
-                        ],
-                      ),
-                      SliderTheme(
-                        data: const SliderThemeData(
-                          showValueIndicator:
-                              ShowValueIndicator.onlyForDiscrete,
-                        ),
-                        child: Slider(
-                          value: passLength.toDouble(),
-                          label: 'Length: $passLength',
-                          min: Constants.minPassLength.toDouble(),
-                          max: Constants.maxPassLength.toDouble(),
-                          divisions:
-                              Constants.maxPassLength - Constants.minPassLength,
-                          thumbColor: Colors.white,
-                          activeColor: Constants.lightText,
-                          onChanged: (value) {
-                            setDialogState(() {
-                              passLength = value.toInt();
-                              passCon.text = keyTitanPass.genPassword(
-                                Complexity.getComplexity(complexityCon.text),
-                                passLength,
-                              );
-                            });
-                          },
-                        ),
-                      ),
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 12.0),
-                        child: ElevatedButton(
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.white,
-                            foregroundColor: Constants.cardColor,
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 20, vertical: 20),
-                          ),
-                          onPressed: () {
-                            if (formKey.currentState!.validate()) {
-                              edit ? _updatePassword() : _createPassword();
-                            }
-                          },
-                          child: Text(edit ? 'Update!' : 'Create!'),
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                );
-              },
-            ),
+                ),
+              );
+            },
           ),
         ),
       );
     } finally {
-      // Zero all sensitive fields when the dialog closes — whether via submit,
+      // Zero all sensitive fields when the dialog closes - whether via submit,
       // cancel, back gesture, or any other dismissal path.
-      passCon.text = '';
-      userCon.text = '';
-      titleCon.text = '';
-      siteCon.text = '';
-      catCon.text = '';
-      idCon.text = '';
+      _clearAllControllers();
     }
+  }
+
+  Widget _buildCategoryInputs(
+    List<DropdownMenuEntry<dynamic>> categoryOptions,
+    double dialogWidth,
+  ) {
+    final categoryWidth =
+        Constants.isMobile ? dialogWidth : (dialogWidth - 44) * 0.54;
+    final categoryDropdown =
+        _buildCategoryDropdown(categoryOptions, categoryWidth);
+    final newCategoryField = TextFormField(
+      controller: catCon,
+      decoration: const InputDecoration(
+        hintText: 'New Category',
+        label: Text('New Category'),
+      ),
+    );
+
+    if (Constants.isMobile) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          categoryDropdown,
+          const SizedBox(height: 12),
+          newCategoryField,
+        ],
+      );
+    }
+
+    // Category: pick an existing one or type a new one.
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(flex: 5, child: categoryDropdown),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 8),
+          child: Text('OR'),
+        ),
+        Expanded(flex: 4, child: newCategoryField),
+      ],
+    );
+  }
+
+  Widget _buildCategoryDropdown(
+    List<DropdownMenuEntry<dynamic>> categoryOptions,
+    double width,
+  ) {
+    return DropdownMenu<dynamic>(
+      dropdownMenuEntries: categoryOptions,
+      hintText: 'Category',
+      label: const Text('Select Category'),
+      width: width,
+      controller: catCon,
+    );
+  }
+
+  Widget _buildComplexityPicker(
+    List<DropdownMenuEntry<int>> complexityOptions,
+    double dialogWidth,
+  ) {
+    final dropdownWidth = dialogWidth - 48;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Expanded(
+          child: SizedBox(
+            width: dropdownWidth,
+            child: DropdownMenu<int>(
+              dropdownMenuEntries: complexityOptions,
+              initialSelection: Complexity.basic.value,
+              label: const Text('Password Complexity'),
+              width: dropdownWidth,
+              controller: complexityCon,
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        const Tooltip(
+          message:
+              'Use the highest complexity your site allows.\nLudicrous mode: all printable ASCII characters.',
+          triggerMode: TooltipTriggerMode.tap,
+          showDuration: Duration(seconds: 5),
+          child: Icon(Icons.info_outline),
+        ),
+      ],
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -616,6 +804,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
               return DefaultTabController(
                 length: categories.length,
                 child: Scaffold(
+                  resizeToAvoidBottomInset: false,
                   appBar: AppBar(
                     leading: Image.asset(
                       'assets/keytitan_nobkg.png',
@@ -653,6 +842,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
                         masterPassword: pFile!.passwordBytes,
                         settings: _settings,
                         onEdit: (data) async {
+                          final messenger = ScaffoldMessenger.of(context);
                           // Decrypt the password only at the moment the edit
                           // button is pressed, then populate the dialog.
                           final decryptedPass = await keyTitanPass.hdecrypt(
@@ -660,6 +850,15 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
                             data['password'] as String,
                           );
                           if (!mounted) return;
+                          if (decryptedPass == keyTitanPass.decryptionError) {
+                            messenger.showSnackBar(
+                              const SnackBar(
+                                content: Text('Could not decrypt password'),
+                                backgroundColor: Colors.redAccent,
+                              ),
+                            );
+                            return;
+                          }
                           idCon.text = data['id'].toString();
                           titleCon.text = data['title'] as String;
                           siteCon.text = (data['site'] ?? '') as String;
@@ -696,6 +895,13 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
             onPressed: () => _showPasswordDialog(),
           ),
           IconButton(
+            icon: const Icon(Icons.key),
+            color: Colors.amberAccent,
+            tooltip: 'Change Vault Password',
+            iconSize: Constants.footerButtonSize,
+            onPressed: _showChangeVaultPasswordDialog,
+          ),
+          IconButton(
             icon: const Icon(Icons.save),
             color: Colors.blueAccent,
             tooltip: 'Save & Close',
@@ -716,6 +922,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
 
   Widget _buildEmptyState() {
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       appBar: AppBar(title: Text(widget.title)),
       bottomNavigationBar: _buildBottomNav(),
       body: Container(
@@ -734,7 +941,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
 
 // Displays the password list for a single category tab.
 // Passwords stored in the DB are always encrypted (ChaCha20-Poly1305 via hencrypt).
-// Decryption happens only at the instant of user action (copy or edit) —
+// Decryption happens only at the instant of user action (copy or edit) -
 // never eagerly during list construction.
 class _CategoryListView extends StatelessWidget {
   final String category;
@@ -796,7 +1003,7 @@ class _CategoryListView extends StatelessWidget {
 
               // Only title and username are displayed in the card.
               // The password ciphertext (item['password']) is never decrypted
-              // here — decryption happens inside the action callbacks below.
+              // here - decryption happens inside the action callbacks below.
               return Card(
                 margin: const EdgeInsets.only(bottom: 12),
                 clipBehavior: Clip.antiAlias,
@@ -887,7 +1094,7 @@ class _CategoryListView extends StatelessWidget {
             masterPassword,
             item['password'] as String,
           );
-          if (plaintext == '[Decryption Error]') {
+          if (plaintext == keyTitanPass.decryptionError) {
             messenger.showSnackBar(
               const SnackBar(
                 content: Text('Could not decrypt password'),

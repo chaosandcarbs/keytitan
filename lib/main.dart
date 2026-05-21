@@ -13,9 +13,9 @@ import 'settings.dart';
 import 'globals.dart';
 
 void main() {
-  if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+  if (Constants.isDesktop) {
     _initDesktop();
-  } else if (Platform.isAndroid || Platform.isIOS) {
+  } else if (Constants.isMobile) {
     _initMobile();
   }
 
@@ -69,7 +69,6 @@ void _initMobile() {
   Constants.titleTextSize = 21.0;
   Constants.cardSepHeight = 45;
   Constants.cardHeight = 185;
-  Constants.cardIconSpacing = 10.0;
   Constants.cardIconSize = 16.0;
 }
 
@@ -126,7 +125,7 @@ class KeyTitanApp extends StatelessWidget {
   }
 }
 
-// Landing screen — renders the home-screen menu cards defined in CardInfo.
+// Landing screen - renders the home-screen menu cards defined in CardInfo.
 class KeyTitanHome extends StatefulWidget {
   const KeyTitanHome({
     super.key,
@@ -146,7 +145,7 @@ class _KeyTitanHomeState extends State<KeyTitanHome> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final height = MediaQuery.of(context).size.height;
-    if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    if (Constants.isDesktop) {
       Constants.cardHeight = height * 0.125;
       Constants.cardSepHeight = height * 0.043;
     } else {

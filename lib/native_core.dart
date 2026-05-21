@@ -138,6 +138,7 @@ class KeyTitanNativeCore {
     return ptr;
   }
 
+  // Wipe Dart-owned FFI buffers before returning them to calloc.
   static void _zeroFree(Pointer<Uint8> ptr, int len) {
     if (ptr == nullptr) return;
     if (len > 0) ptr.asTypedList(len).fillRange(0, len, 0);

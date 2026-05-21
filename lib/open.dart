@@ -5,6 +5,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'globals.dart';
 import 'passwords.dart';
+import 'vault_files.dart';
 
 class KeyTitanOpen extends StatefulWidget {
   const KeyTitanOpen({
@@ -35,9 +36,7 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
   Future<void> _handleOpenFile() async {
     final appDir = await getApplicationDocumentsDirectory();
 
-    // On Android the system file picker cannot navigate to app-private storage,
-    // so we enumerate .ktn/.pass/.hydra files there ourselves and let the user
-    // pick from a list. On desktop we use the normal file picker.
+    // Android cannot browse app-private storage, so we list .ktn files there.
     final String? filePath;
     if (Platform.isAndroid) {
       filePath = await _pickFromAppStorage(appDir.path);
@@ -71,13 +70,13 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
         } else {
           await pFile.dispose();
         }
-      } else {
+      } else if (mounted) {
         await pFile.dispose();
         setState(() => _errorMessage = 'Incorrect password or corrupted file.');
       }
     } catch (e) {
       await pFile?.dispose();
-      setState(() => _errorMessage = 'Error: ${e.toString()}');
+      if (mounted) setState(() => _errorMessage = 'Error: ${e.toString()}');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
@@ -88,8 +87,7 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
   Future<String?> _pickFromAppStorage(String dirPath) async {
     final entities = await Directory(dirPath).list().toList();
     final files = entities.whereType<File>().where((f) {
-      final ext = p.extension(f.path).toLowerCase();
-      return ext == '.ktn' || ext == '.pass' || ext == '.hydra';
+      return KeyTitanVaultFiles.hasVaultExtension(f.path);
     }).toList()
       ..sort((a, b) => p.basename(a.path).compareTo(p.basename(b.path)));
 
@@ -157,7 +155,7 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
   Future<String?> _pickWithSystemPicker(String initialDir) async {
     final result = await FilePicker.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['ktn', 'pass', 'hydra'],
+      allowedExtensions: [KeyTitanVaultFiles.pickerExtension],
       initialDirectory: initialDir,
     );
     return result?.files.single.path;
@@ -168,6 +166,7 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
     return showDialog<String>(
       context: context,
       builder: (context) => AlertDialog(
+        scrollable: true,
         title: const Text('Unlock File'),
         content: TextField(
           controller: _passController,
@@ -199,6 +198,7 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      resizeToAvoidBottomInset: false,
       appBar: genTitanAppBar(widget.title),
       backgroundColor: Constants.backColor,
       bottomSheet: bottomBar(context),

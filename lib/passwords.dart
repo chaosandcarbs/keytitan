@@ -4,7 +4,6 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:math';
 import 'package:flutter/material.dart';
-import 'package:encrypt/encrypt.dart' as encrypt;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:cryptography/cryptography.dart' as crypto;
 import 'package:crypto/crypto.dart' as dart_crypto;
@@ -17,18 +16,10 @@ import 'native_core.dart';
 // ---------------------------------------------------------------------------
 // .ktn file format
 // ---------------------------------------------------------------------------
-// v2 (legacy):  [8-byte Salsa20 IV] [16-byte Argon2id salt] [ciphertext]
-//   Key: Argon2id(memory=64MB, parallelism=2, iterations=3) → 32 bytes.
-//   Supported for reading only — files are upgraded to v3 on next save.
-//
-// v3 (current): [4-byte magic "KTN3"] [12-byte ChaCha20 nonce]
+// v3: [4-byte magic "KTN3"] [12-byte ChaCha20 nonce]
 //               [16-byte Argon2id salt] [ciphertext+16-byte Poly1305 MAC]
-//   Key: Argon2id(memory=64MB, parallelism=2, iterations=3) → 32 bytes.
+//   Key: Argon2id(memory=64MB, parallelism=2, iterations=3) -> 32 bytes.
 //   A fresh random nonce and salt are written on every save.
-//
-// attemptDecrypt detects v3 by the "KTN3" magic prefix; otherwise falls back
-// to v2 Salsa20+Argon2id. Files opened as v2 are silently upgraded to v3 on
-// the next save.
 // ---------------------------------------------------------------------------
 
 // 4-byte magic that identifies a v3 file.
@@ -42,10 +33,9 @@ Uint8List _secureRandomBytes(int length) {
 
 class passFile {
   final String fileName; // full path to the .ktn file
-  final Uint8List _passwordBytes; // zeroed on dispose
+  Uint8List _passwordBytes; // zeroed on dispose or password change
 
   Database? _db;
-  bool isEncrypted = true;
 
   passFile(this.fileName, String password)
       : _passwordBytes = Uint8List.fromList(utf8.encode(password));
@@ -53,8 +43,6 @@ class passFile {
   // Expose key material only for field-level decryption. Do not hold the
   // returned reference longer than the immediate call.
   Uint8List get passwordBytes => _passwordBytes;
-
-  static passFile fromObject(Object? obj) => obj as passFile;
 
   // ---------------------------------------------------------------------------
   // Lifecycle
@@ -129,13 +117,18 @@ class passFile {
   // Encrypt / Decrypt
   // ---------------------------------------------------------------------------
 
-  // Reads the .ktn file, decrypts it, and loads the result into an in-memory
-  // SQLite database. Tries the current v3 format first, then falls back to v2.
+  // Reads a v3 .ktn file, decrypts it, and loads the result into an in-memory
+  // SQLite database.
   Future<bool> attemptDecrypt() async {
     try {
       final f = File(fileName);
       if (!await f.exists()) return false;
       final encData = await f.readAsBytes();
+
+      // Layout: [4 magic][12 nonce][16 salt][ciphertext+16 MAC] -> min 49 bytes
+      if (encData.length < 49 || !_hasV3Magic(encData)) {
+        return false;
+      }
 
       final nativeDecrypted =
           KeyTitanNativeCore.instance?.decryptVault(encData, _passwordBytes);
@@ -143,7 +136,6 @@ class passFile {
         try {
           if (_isValidSqliteBytes(nativeDecrypted)) {
             await _loadDbFromBytes(nativeDecrypted);
-            isEncrypted = false;
             return true;
           }
         } finally {
@@ -151,45 +143,27 @@ class passFile {
         }
       }
 
-      // Detect v3 by magic prefix "KTN3".
-      // Layout: [4 magic][12 nonce][16 salt][ciphertext+16 MAC] → min 49 bytes
-      if (encData.length >= 49 && _hasV3Magic(encData)) {
-        final nonce = encData.sublist(4, 16);
-        final salt = encData.sublist(16, 32);
-        final cipherPayload = encData.sublist(32);
+      final nonce = encData.sublist(4, 16);
+      final salt = encData.sublist(16, 32);
+      final cipherPayload = encData.sublist(32);
 
-        final keyBytes =
-            await _deriveKeyArgon2id(_passwordBytes, Uint8List.fromList(salt));
-        final decrypted =
-            await _chaCha20Decrypt(keyBytes, nonce, cipherPayload);
+      final keyBytes =
+          await _deriveKeyArgon2id(_passwordBytes, Uint8List.fromList(salt));
+      Uint8List? decrypted;
+      try {
+        decrypted = await _chaCha20Decrypt(keyBytes, nonce, cipherPayload);
+      } finally {
         keyBytes.fillRange(0, keyBytes.length, 0);
-
-        if (decrypted != null && _isValidSqliteBytes(decrypted)) {
-          await _loadDbFromBytes(decrypted);
-          isEncrypted = false;
-          return true;
-        }
-        return false;
       }
 
-      // Fallback: v2 Salsa20 + Argon2id.
-      // Layout: [8 IV][16 salt][ciphertext] → min 25 bytes
-      if (encData.length >= 25) {
-        final iv = encrypt.IV(encData.sublist(0, 8));
-        final salt = encData.sublist(8, 24);
-        final cipherBytes = encrypt.Encrypted(encData.sublist(24));
-
-        final keyBytes =
-            await _deriveKeyArgon2id(_passwordBytes, Uint8List.fromList(salt));
-        final decrypted = _salsa20Decrypt(keyBytes, iv, cipherBytes);
-        keyBytes.fillRange(0, keyBytes.length, 0);
-
-        if (_isValidSqliteBytes(decrypted)) {
-          await _loadDbFromBytes(decrypted);
-          isEncrypted = false;
-          debugPrint(
-              'Opened legacy v2 file — will upgrade to v3 on next save.');
-          return true;
+      if (decrypted != null) {
+        try {
+          if (_isValidSqliteBytes(decrypted)) {
+            await _loadDbFromBytes(decrypted);
+            return true;
+          }
+        } finally {
+          decrypted.fillRange(0, decrypted.length, 0);
         }
       }
 
@@ -213,7 +187,6 @@ class passFile {
         if (nativeEncrypted != null) {
           try {
             await _writeVaultBytesAtomic(nativeEncrypted);
-            isEncrypted = true;
             return true;
           } finally {
             nativeEncrypted.fillRange(0, nativeEncrypted.length, 0);
@@ -224,8 +197,12 @@ class passFile {
         final nonce = _secureRandomBytes(12);
 
         final keyBytes = await _deriveKeyArgon2id(_passwordBytes, salt);
-        final cipherPayload = await _chaCha20Encrypt(keyBytes, nonce, rawBytes);
-        keyBytes.fillRange(0, keyBytes.length, 0);
+        final Uint8List cipherPayload;
+        try {
+          cipherPayload = await _chaCha20Encrypt(keyBytes, nonce, rawBytes);
+        } finally {
+          keyBytes.fillRange(0, keyBytes.length, 0);
+        }
 
         // v3 layout: [4 magic "KTN3"][12 nonce][16 salt][ciphertext+16 MAC]
         final out = Uint8List(4 + 12 + 16 + cipherPayload.length);
@@ -236,7 +213,6 @@ class passFile {
 
         await _writeVaultBytesAtomic(out);
 
-        isEncrypted = true;
         return true;
       } finally {
         rawBytes.fillRange(0, rawBytes.length, 0);
@@ -337,17 +313,6 @@ class passFile {
   }
 
   // ---------------------------------------------------------------------------
-  // Legacy Salsa20 helpers (read-only, for v2 backward compatibility)
-  // ---------------------------------------------------------------------------
-
-  Uint8List _salsa20Decrypt(
-          Uint8List k, encrypt.IV iv, encrypt.Encrypted blob) =>
-      Uint8List.fromList(
-        encrypt.Encrypter(encrypt.Salsa20(encrypt.Key(k)))
-            .decryptBytes(blob, iv: iv),
-      );
-
-  // ---------------------------------------------------------------------------
   // Magic-byte detection
   // ---------------------------------------------------------------------------
 
@@ -374,7 +339,7 @@ class passFile {
           );
           final passwords = srcDb.select(
             'SELECT id, title, site, category_id, username, password, '
-            '${_sqliteColumnExists(srcDb, 'password', 'uris') ? 'uris' : "'' AS uris"} '
+            'uris '
             'FROM password ORDER BY id ASC',
           );
 
@@ -433,23 +398,25 @@ class passFile {
           'id, title, site, category_id, username, password, uris'
           ') VALUES (?, ?, ?, ?, ?, ?, ?)',
         );
-
-        for (final row in categories) {
-          catStmt.execute([row['id'], row['category']]);
+        try {
+          for (final row in categories) {
+            catStmt.execute([row['id'], row['category']]);
+          }
+          for (final row in passwords) {
+            passStmt.execute([
+              row['id'],
+              row['title'],
+              row['site'],
+              row['category_id'],
+              row['username'],
+              row['password'],
+              row['uris'],
+            ]);
+          }
+        } finally {
+          catStmt.close();
+          passStmt.close();
         }
-        for (final row in passwords) {
-          passStmt.execute([
-            row['id'],
-            row['title'],
-            row['site'],
-            row['category_id'],
-            row['username'],
-            row['password'],
-            row['uris'],
-          ]);
-        }
-        catStmt.close();
-        passStmt.close();
         dstDb.execute('COMMIT');
       } catch (_) {
         dstDb.execute('ROLLBACK');
@@ -533,11 +500,6 @@ class passFile {
     );
   }
 
-  bool _sqliteColumnExists(sqlite.Database db, String table, String column) {
-    final columns = db.select('PRAGMA table_info($table)');
-    return columns.any((row) => row['name'] == column);
-  }
-
   // ---------------------------------------------------------------------------
   // Validation
   // ---------------------------------------------------------------------------
@@ -612,6 +574,100 @@ class passFile {
     }
   }
 
+  Future<bool> changeMasterPassword({
+    required String currentPassword,
+    required String newPassword,
+  }) async {
+    if (currentPassword.isEmpty || newPassword.isEmpty) return false;
+
+    final db = await _initDatabase();
+    final currentBytes = Uint8List.fromList(utf8.encode(currentPassword));
+    final newBytes = Uint8List.fromList(utf8.encode(newPassword));
+    final oldBytes = _passwordBytes;
+    final updates = <_PasswordCipherUpdate>[];
+    var dbUpdated = false;
+    var newBytesOwnedByFile = false;
+
+    try {
+      if (!_constantTimeEquals(oldBytes, currentBytes)) return false;
+
+      final rows = await db.query('password', columns: ['id', 'password']);
+      for (final row in rows) {
+        final id = row['id'] as int;
+        final oldCipher = row['password']?.toString() ?? '';
+        final plainText = await keyTitanPass.hdecrypt(oldBytes, oldCipher);
+        if (plainText == keyTitanPass.decryptionError) return false;
+
+        final newCipher = await keyTitanPass.hencrypt(newBytes, plainText);
+        updates.add(_PasswordCipherUpdate(id, oldCipher, newCipher));
+      }
+
+      await _applyPasswordCipherUpdates(db, updates, useNewCipher: true);
+      dbUpdated = true;
+
+      _passwordBytes = newBytes;
+      newBytesOwnedByFile = true;
+
+      if (await attemptEncrypt()) {
+        oldBytes.fillRange(0, oldBytes.length, 0);
+        return true;
+      }
+
+      _passwordBytes = oldBytes;
+      newBytesOwnedByFile = false;
+      await _applyPasswordCipherUpdates(db, updates, useNewCipher: false);
+      return false;
+    } catch (e) {
+      debugPrint('Password change error: $e');
+      if (identical(_passwordBytes, newBytes)) {
+        _passwordBytes = oldBytes;
+        newBytesOwnedByFile = false;
+      }
+      if (dbUpdated) {
+        try {
+          await _applyPasswordCipherUpdates(db, updates, useNewCipher: false);
+        } catch (rollbackError) {
+          debugPrint('Password change rollback error: $rollbackError');
+        }
+      }
+      return false;
+    } finally {
+      currentBytes.fillRange(0, currentBytes.length, 0);
+      if (!newBytesOwnedByFile) {
+        newBytes.fillRange(0, newBytes.length, 0);
+      }
+    }
+  }
+
+  Future<void> _applyPasswordCipherUpdates(
+    Database db,
+    List<_PasswordCipherUpdate> updates, {
+    required bool useNewCipher,
+  }) async {
+    if (updates.isEmpty) return;
+    await db.transaction((txn) async {
+      for (final update in updates) {
+        await txn.update(
+          'password',
+          {'password': useNewCipher ? update.newCipher : update.oldCipher},
+          where: 'id = ?',
+          whereArgs: [update.id],
+        );
+      }
+    });
+  }
+
+  bool _constantTimeEquals(List<int> left, List<int> right) {
+    var diff = left.length ^ right.length;
+    final maxLength = left.length > right.length ? left.length : right.length;
+    for (var i = 0; i < maxLength; i++) {
+      final leftByte = i < left.length ? left[i] : 0;
+      final rightByte = i < right.length ? right[i] : 0;
+      diff |= leftByte ^ rightByte;
+    }
+    return diff == 0;
+  }
+
   Future<int> getCategoryID(String category) async {
     final db = await _initDatabase();
     final res = await db
@@ -644,8 +700,16 @@ class passFile {
   }
 }
 
+class _PasswordCipherUpdate {
+  final int id;
+  final String oldCipher;
+  final String newCipher;
+
+  const _PasswordCipherUpdate(this.id, this.oldCipher, this.newCipher);
+}
+
 // ---------------------------------------------------------------------------
-// keyTitanPass — a single password entry
+// keyTitanPass - a single password entry
 // ---------------------------------------------------------------------------
 
 class keyTitanPass {
@@ -725,6 +789,7 @@ class keyTitanPass {
   // ---------------------------------------------------------------------------
 
   static const String _fieldCipherPrefix = 'c20p1';
+  static const String decryptionError = '[Decryption Error]';
   static final _fieldCipher = crypto.Chacha20.poly1305Aead();
 
   static Uint8List _deriveFieldKey(Uint8List seedBytes) {
@@ -733,14 +798,6 @@ class keyTitanPass {
       ...seedBytes,
     ]);
     return Uint8List.fromList(digest.bytes);
-  }
-
-  static Uint8List _deriveLegacyAesKey(Uint8List passBytes) {
-    final key = Uint8List(32);
-    for (int i = 0; i < 32; i++) {
-      key[i] = passBytes[i % passBytes.length];
-    }
-    return key;
   }
 
   static Future<String> hencrypt(Uint8List seedBytes, String plainText) async {
@@ -767,14 +824,16 @@ class keyTitanPass {
 
   static Future<String> hdecrypt(Uint8List seedBytes, String cipherText) async {
     if (cipherText.isEmpty) return '';
+
     final nativeDecrypted =
         KeyTitanNativeCore.instance?.fieldDecrypt(seedBytes, cipherText);
     if (nativeDecrypted != null) return nativeDecrypted;
 
-    if (cipherText.startsWith('$_fieldCipherPrefix:')) {
-      return _hdecryptChaCha20(seedBytes, cipherText);
+    if (!cipherText.startsWith('$_fieldCipherPrefix:')) {
+      return decryptionError;
     }
-    return _hdecryptLegacyAesCbc(seedBytes, cipherText);
+
+    return _hdecryptChaCha20(seedBytes, cipherText);
   }
 
   static Future<String> _hdecryptChaCha20(
@@ -783,11 +842,11 @@ class keyTitanPass {
   ) async {
     try {
       final parts = cipherText.split(':');
-      if (parts.length != 3) return '[Decryption Error]';
+      if (parts.length != 3) return decryptionError;
       final nonce = base64.decode(parts[1]);
       final payload = base64.decode(parts[2]);
       if (nonce.length != 12 || payload.length < 16) {
-        return '[Decryption Error]';
+        return decryptionError;
       }
 
       final keyBytes = _deriveFieldKey(seedBytes);
@@ -804,30 +863,7 @@ class keyTitanPass {
         keyBytes.fillRange(0, keyBytes.length, 0);
       }
     } catch (_) {
-      return '[Decryption Error]';
-    }
-  }
-
-  static String _hdecryptLegacyAesCbc(
-    Uint8List seedBytes,
-    String cipherText,
-  ) {
-    try {
-      final parts = cipherText.split(':');
-      if (parts.length != 2) return '[Decryption Error]';
-      final iv = encrypt.IV.fromBase64(parts[0]);
-      final encrypted = encrypt.Encrypted.fromBase64(parts[1]);
-      final keyBytes = _deriveLegacyAesKey(seedBytes);
-      try {
-        final key = encrypt.Key(keyBytes);
-        final encrypter =
-            encrypt.Encrypter(encrypt.AES(key, mode: encrypt.AESMode.cbc));
-        return encrypter.decrypt(encrypted, iv: iv);
-      } finally {
-        keyBytes.fillRange(0, keyBytes.length, 0);
-      }
-    } catch (_) {
-      return '[Decryption Error]';
+      return decryptionError;
     }
   }
 

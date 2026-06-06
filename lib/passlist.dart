@@ -839,7 +839,6 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
                       return _CategoryListView(
                         category: cat['category'],
                         pFile: pFile!,
-                        masterPassword: pFile!.passwordBytes,
                         settings: _settings,
                         onEdit: (data) async {
                           final messenger = ScaffoldMessenger.of(context);
@@ -946,7 +945,6 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
 class _CategoryListView extends StatelessWidget {
   final String category;
   final passFile pFile;
-  final Uint8List masterPassword;
   final KeyTitanSettingsData settings;
 
   /// Called when the user taps Edit. Receives the raw DB row (password field
@@ -957,7 +955,6 @@ class _CategoryListView extends StatelessWidget {
   const _CategoryListView({
     required this.category,
     required this.pFile,
-    required this.masterPassword,
     required this.settings,
     required this.onEdit,
     required this.onDelete,
@@ -1069,29 +1066,15 @@ class _CategoryListView extends StatelessWidget {
             hasSite ? () => _launchInBrowser(item['site'].toString()) : null,
       ),
       IconButton(
-        tooltip: settings.outputMode == PasswordOutputMode.clipboard
-            ? 'Copy Password'
-            : 'Autofill Password',
-        icon: Icon(
-          settings.outputMode == PasswordOutputMode.clipboard
-              ? Icons.copy
-              : Icons.password,
-        ),
+        tooltip: 'Copy Password',
+        icon: const Icon(Icons.copy),
         iconSize: Constants.cardIconSize,
         onPressed: () async {
           final messenger = ScaffoldMessenger.of(context);
-          if (settings.outputMode == PasswordOutputMode.autofill) {
-            messenger.showSnackBar(
-              const SnackBar(
-                content: Text('Use the OS autofill prompt to fill passwords'),
-              ),
-            );
-            return;
-          }
           // Decrypt only at the moment the copy button is pressed.
           // The plaintext exists only for the duration of this callback.
           final plaintext = await keyTitanPass.hdecrypt(
-            masterPassword,
+            pFile.passwordBytes,
             item['password'] as String,
           );
           if (plaintext == keyTitanPass.decryptionError) {

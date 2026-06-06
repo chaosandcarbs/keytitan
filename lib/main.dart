@@ -82,6 +82,9 @@ class KeyTitanApp extends StatelessWidget {
     return MaterialApp(
       title: 'KeyTitan Password Manager',
       navigatorKey: _navigatorKey,
+      builder: (context, child) {
+        return child ?? const SizedBox.shrink();
+      },
       theme: ThemeData(
         useMaterial3: true,
         primarySwatch: Colors.blueGrey,

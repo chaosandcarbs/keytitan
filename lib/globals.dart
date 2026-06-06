@@ -95,7 +95,7 @@ class Constants {
   static double cardHeight = 120.0;
   static double cardSepHeight = 20.0;
   static double cardIconSize = 24.0;
-  static const double footerButtonSize = 32.0;
+  static double footerButtonSize = 32.0;
 
   // --- Typography ---
   static double titleTextSize = 24.0;

@@ -5,7 +5,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'globals.dart';
 import 'passwords.dart';
-import 'vault_files.dart';
 
 class KeyTitanOpen extends StatefulWidget {
   const KeyTitanOpen({
@@ -76,7 +75,8 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
       }
     } catch (e) {
       await pFile?.dispose();
-      if (mounted) setState(() => _errorMessage = 'Error: ${e.toString()}');
+      // if (mounted) setState(() => _errorMessage = 'Error: ${e.toString()}');
+      if (mounted) setState(() => _errorMessage = 'Error: Unable to open file');
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }

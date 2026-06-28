@@ -11,7 +11,7 @@ import 'package:googleapis/drive/v3.dart' as ga;
 import 'package:path/path.dart' as p;
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
-import 'vault_files.dart';
+import 'globals.dart';
 
 // ---------------------------------------------------------------------------
 // SecureStorage - persists desktop OAuth credentials across sessions.

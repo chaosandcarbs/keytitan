@@ -4,7 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:keytitan/passwords.dart';
-import 'package:keytitan/vault_files.dart';
+import 'package:keytitan/globals.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 void main() {

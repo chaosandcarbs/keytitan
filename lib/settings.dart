@@ -30,6 +30,7 @@ enum PasswordOutputMode {
 class KeyTitanSettingsData {
   static const List<int> clipboardDelayOptions = [15, 30, 45, 60];
   static const List<int> autofillAttemptWindowOptions = [15, 30, 60, 300];
+  static const List<int> autoLockDelayOptions = [15, 30, 60, 300, 0];
 
   final PasswordOutputMode outputMode;
   final bool clearClipboardAfterCopy;
@@ -37,6 +38,7 @@ class KeyTitanSettingsData {
   final bool showPlaintextOnEdit;
   final bool showAutofillUriOverrides;
   final int autofillAttemptWindowSeconds;
+  final int autoLockDelaySeconds;
 
   const KeyTitanSettingsData({
     this.outputMode = PasswordOutputMode.clipboard,
@@ -45,6 +47,7 @@ class KeyTitanSettingsData {
     this.showPlaintextOnEdit = false,
     this.showAutofillUriOverrides = false,
     this.autofillAttemptWindowSeconds = 30,
+    this.autoLockDelaySeconds = 30,
   });
 
   KeyTitanSettingsData copyWith({
@@ -54,6 +57,7 @@ class KeyTitanSettingsData {
     bool? showPlaintextOnEdit,
     bool? showAutofillUriOverrides,
     int? autofillAttemptWindowSeconds,
+    int? autoLockDelaySeconds,
   }) {
     return KeyTitanSettingsData(
       outputMode: outputMode ?? this.outputMode,
@@ -66,6 +70,8 @@ class KeyTitanSettingsData {
           showAutofillUriOverrides ?? this.showAutofillUriOverrides,
       autofillAttemptWindowSeconds:
           autofillAttemptWindowSeconds ?? this.autofillAttemptWindowSeconds,
+      autoLockDelaySeconds:
+          autoLockDelaySeconds ?? this.autoLockDelaySeconds,
     );
   }
 
@@ -81,6 +87,15 @@ class KeyTitanSettingsData {
     final parsedAutofillWindowInt = parsedAutofillWindow is int
         ? parsedAutofillWindow
         : int.tryParse(parsedAutofillWindow?.toString() ?? '');
+    final parsedAutoLockDelay = json['autoLockDelaySeconds'];
+    final parsedAutoLockDelayInt = parsedAutoLockDelay is int
+        ? parsedAutoLockDelay
+        : int.tryParse(parsedAutoLockDelay?.toString() ?? '');
+    final migratedAutoLockDelay =
+        json.containsKey('autoLockOnBackground') &&
+                !json.containsKey('autoLockDelaySeconds')
+            ? (json['autoLockOnBackground'] == true ? 30 : 0)
+            : 30;
 
     return KeyTitanSettingsData(
       outputMode: _supportsAutofillMode
@@ -97,6 +112,10 @@ class KeyTitanSettingsData {
           autofillAttemptWindowOptions.contains(parsedAutofillWindowInt)
               ? parsedAutofillWindowInt!
               : 30,
+      autoLockDelaySeconds:
+          autoLockDelayOptions.contains(parsedAutoLockDelayInt)
+              ? parsedAutoLockDelayInt!
+              : migratedAutoLockDelay,
     );
   }
 
@@ -110,6 +129,7 @@ class KeyTitanSettingsData {
       'showPlaintextOnEdit': showPlaintextOnEdit,
       'showAutofillUriOverrides': showAutofillUriOverrides,
       'autofillAttemptWindowSeconds': autofillAttemptWindowSeconds,
+      'autoLockDelaySeconds': autoLockDelaySeconds,
     };
   }
 
@@ -125,6 +145,23 @@ class KeyTitanSettingsData {
         return 'Once per 5m';
       default:
         return 'Once per ${seconds}s';
+    }
+  }
+
+  static String autoLockDelayLabel(int seconds) {
+    switch (seconds) {
+      case 0:
+        return 'Never';
+      case 15:
+        return '15s';
+      case 30:
+        return '30s';
+      case 60:
+        return '1m';
+      case 300:
+        return '5m';
+      default:
+        return '${seconds}s';
     }
   }
 }
@@ -357,6 +394,37 @@ class _KeyTitanSettingsState extends State<KeyTitanSettings> {
                               : null,
                         ),
                       ],
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  _buildPanel(
+                    title: 'Security',
+                    children: [
+                      DropdownButtonFormField<int>(
+                        initialValue: _settings.autoLockDelaySeconds,
+                        decoration: const InputDecoration(
+                          labelText: 'Auto-lock after background',
+                        ),
+                        items: KeyTitanSettingsData.autoLockDelayOptions
+                            .map(
+                              (seconds) => DropdownMenuItem(
+                                value: seconds,
+                                child: Text(
+                                  KeyTitanSettingsData
+                                      .autoLockDelayLabel(seconds),
+                                ),
+                              ),
+                            )
+                            .toList(),
+                        onChanged: (value) {
+                          if (value == null) return;
+                          _updateSettings(
+                            _settings.copyWith(
+                              autoLockDelaySeconds: value,
+                            ),
+                          );
+                        },
+                      ),
                     ],
                   ),
                   const SizedBox(height: 16),

@@ -2,9 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
-import 'passwords.dart';
+import 'passwords.dart'; 
 import 'globals.dart';
-import 'vault_files.dart';
 
 class KeyTitanNew extends StatefulWidget {
   const KeyTitanNew(
@@ -194,7 +193,7 @@ class _KeyTitanNewState extends State<KeyTitanNew> {
       ),
       validator: (v) {
         if (v == null || v.isEmpty) return 'Enter a filename';
-        if (v.contains(RegExp(r'[<>:"/\\|?*]'))) {
+        if (hasIllegalFileCharacters(v)) {
           return 'Filename contains invalid characters';
         }
         return null;

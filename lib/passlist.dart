@@ -20,7 +20,8 @@ class KeyTitanList extends StatefulWidget {
   State<KeyTitanList> createState() => _KeyTitanListState();
 }
 
-class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
+class _KeyTitanListState extends State<KeyTitanList>
+    with WindowListener, WidgetsBindingObserver {
   // Form controllers for the add/edit password dialog.
   final headCon = TextEditingController();
   final idCon = TextEditingController();
@@ -45,6 +46,9 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
   // dispose() method does not double-dispose it.
   bool _pFileDisposed = false;
   KeyTitanSettingsData _settings = const KeyTitanSettingsData();
+  Timer? _backgroundLockTimer;
+  DateTime? _backgroundedAt;
+  bool _isAutoLocking = false;
 
   List<TextEditingController> get _dialogControllers => [
         headCon,
@@ -61,6 +65,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     // Only desktop platforms support the window-close interception.
     if (!Constants.isMobile) {
       windowManager.addListener(this);
@@ -77,6 +82,8 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _cancelBackgroundLock();
     if (!Constants.isMobile) {
       windowManager.removeListener(this);
     }
@@ -101,6 +108,120 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      _scheduleBackgroundLock();
+      return;
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      _lockIfBackgroundDelayElapsed();
+    }
+  }
+
+  @override
+  void onWindowBlur() {
+    _scheduleBackgroundLock();
+  }
+
+  @override
+  void onWindowMinimize() {
+    _scheduleBackgroundLock();
+  }
+
+  @override
+  void onWindowFocus() {
+    _lockIfBackgroundDelayElapsed();
+  }
+
+  @override
+  void onWindowRestore() {
+    _lockIfBackgroundDelayElapsed();
+  }
+
+  void _scheduleBackgroundLock() {
+    if (_settings.autoLockDelaySeconds <= 0 ||
+        pFile == null ||
+        _isClosing ||
+        _pFileDisposed) {
+      return;
+    }
+
+    _backgroundedAt ??= DateTime.now();
+    _backgroundLockTimer?.cancel();
+    _backgroundLockTimer = Timer(
+      Duration(seconds: _settings.autoLockDelaySeconds),
+      () => unawaited(_lockForBackground()),
+    );
+  }
+
+  void _lockIfBackgroundDelayElapsed() {
+    final backgroundedAt = _backgroundedAt;
+    _cancelBackgroundLock();
+    if (backgroundedAt == null ||
+        _settings.autoLockDelaySeconds <= 0 ||
+        pFile == null ||
+        _isClosing ||
+        _pFileDisposed) {
+      return;
+    }
+
+    final elapsed = DateTime.now().difference(backgroundedAt);
+    if (elapsed >= Duration(seconds: _settings.autoLockDelaySeconds)) {
+      unawaited(_lockForBackground());
+    }
+  }
+
+  void _cancelBackgroundLock() {
+    _backgroundLockTimer?.cancel();
+    _backgroundLockTimer = null;
+    _backgroundedAt = null;
+  }
+
+  Future<void> _lockForBackground() async {
+    if (_isClosing || _pFileDisposed || pFile == null) return;
+    _isClosing = true;
+    _cancelBackgroundLock();
+    _hideSensitiveUiForLock();
+    _clearAllControllers();
+    KeyTitanAutofillBridge.setPasswordResolver(null);
+
+    var saved = false;
+    try {
+      saved = await pFile!.attemptEncrypt();
+    } catch (e) {
+      debugPrint('Auto-lock save error: $e');
+    }
+    if (!saved) {
+      debugPrint('Auto-lock closing without saving because save failed.');
+    }
+
+    try {
+      await pFile?.dispose();
+      _pFileDisposed = true;
+      await KeyTitanAutofillBridge.clearEntries();
+    } catch (e) {
+      debugPrint('Auto-lock cleanup error: $e');
+    }
+
+    if (mounted) {
+      widget.navigatorKey.currentState
+          ?.pushNamedAndRemoveUntil(KeyTitan.home, (route) => false);
+    }
+  }
+
+  void _hideSensitiveUiForLock() {
+    final route = ModalRoute.of(context);
+    if (mounted && route != null && !route.isCurrent) {
+      Navigator.of(context, rootNavigator: true).pop();
+    }
+    if (mounted) {
+      setState(() => _isAutoLocking = true);
+    }
+  }
+
   // Overwrites all sensitive dialog controllers with empty strings so
   // plaintext does not linger in memory any longer than necessary.
   void _clearAllControllers() {
@@ -118,6 +239,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
       return;
     }
     _isClosing = true;
+    _cancelBackgroundLock();
     _clearAllControllers();
     KeyTitanAutofillBridge.setPasswordResolver(null);
     try {
@@ -257,6 +379,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
   Future<void> saveAndClose() async {
     if (_isClosing) return;
     _isClosing = true;
+    _cancelBackgroundLock();
     // Zero dialog fields before the encrypt+dispose steps.
     _clearAllControllers();
     KeyTitanAutofillBridge.setPasswordResolver(null);
@@ -297,6 +420,7 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
   Future<void> closeWithoutSaving() async {
     if (_isClosing) return;
     _isClosing = true;
+    _cancelBackgroundLock();
     _clearAllControllers();
     KeyTitanAutofillBridge.setPasswordResolver(null);
     try {
@@ -775,6 +899,10 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
 
   @override
   Widget build(BuildContext context) {
+    if (_isAutoLocking) {
+      return _buildLockingState();
+    }
+
     if (pFile == null) {
       return const Scaffold(
         body: Center(child: CircularProgressIndicator()),
@@ -934,6 +1062,18 @@ class _KeyTitanListState extends State<KeyTitanList> with WindowListener {
             style: TextStyle(fontSize: 18, fontWeight: FontWeight.w300),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildLockingState() {
+    return Scaffold(
+      appBar: genTitanAppBar('Locking Vault'),
+      backgroundColor: Constants.backColor,
+      body: Container(
+        width: double.infinity,
+        decoration: Constants.backgroundDecoration,
+        child: const Center(child: CircularProgressIndicator()),
       ),
     );
   }

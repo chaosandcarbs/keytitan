@@ -1,5 +1,7 @@
+import 'dart:ffi' hide Size;
 import 'package:flutter/material.dart';
 import 'dart:io';
+import 'package:path/path.dart' as p;
 
 // Named route constants - centralised here to avoid string literals scattered
 // across the codebase.
@@ -11,6 +13,11 @@ class KeyTitan {
   static const String passList = '/list';
   static const String settings = '/settings';
   static const String exit = '/exit';
+}
+
+bool hasIllegalFileCharacters(String test) {
+  if (RegExp(r'''[<>:"'/\\|?*\x00-\x1F]''').hasMatch(test)) return false;
+  return true;
 }
 
 // Metadata for the home-screen menu cards. Adding a new card only requires
@@ -180,6 +187,29 @@ enum Complexity {
       (c) => c.text == displayText,
       orElse: () => Complexity.basic,
     );
+  }
+}
+
+// Helper for Vault File management
+class KeyTitanVaultFiles {
+  KeyTitanVaultFiles._();
+
+  static const extension = '.ktn';
+  static const pickerExtension = 'ktn';
+
+  static bool hasVaultExtension(String path) {
+    return p.extension(path).toLowerCase() == extension;
+  }
+
+  // Drive downloads must resolve to a plain filename, never a path fragment.
+  static String? safeFileName(String fileName) {
+    final trimmed = fileName.trim();
+    if (trimmed.isEmpty) return null;
+    if (hasIllegalFileCharacters(trimmed)) return null;
+    if (!hasVaultExtension(trimmed)) return null;
+
+    final baseName = p.basename(trimmed);
+    return baseName == trimmed ? baseName : null;
   }
 }
 

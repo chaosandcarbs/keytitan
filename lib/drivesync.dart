@@ -7,7 +7,6 @@ import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'globals.dart';
 import 'secstore.dart';
-import 'vault_files.dart';
 
 class KeyTitanSync extends StatefulWidget {
   const KeyTitanSync({

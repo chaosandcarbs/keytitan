@@ -34,6 +34,7 @@ migrate_working_dir/
 .project
 .settings/
 .vscode/*
+../.vscode/*
 .ccls-cache
 
 # Flutter/Dart/Pub related
@@ -46,6 +47,7 @@ migrate_working_dir/
 .pub/
 /.idea/
 /build/
+**/build/
 /bin/cache/
 /bin/internal/bootstrap.bat
 /bin/internal/bootstrap.sh
@@ -88,11 +90,8 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 # Android related
-**/android/**/gradle-wrapper.jar
 .gradle/
 **/android/captures/
-**/android/gradlew
-**/android/gradlew.bat
 **/android/**/GeneratedPluginRegistrant.java
 **/android/key.properties
 *.jks
@@ -161,7 +160,6 @@ app.*.symbols
 !**/ios/**/default.perspectivev3
 !/packages/flutter_tools/test/data/dart_dependencies_test/**/.packages
 !/dev/ci/**/Gemfile.lock
-!.vscode/settings.json
 
 # Monorepo
 .cipd
@@ -174,6 +172,7 @@ kt.env
 
 # Rust native build artifacts
 native/**/target/
+native/**/prebuilt/
 
 # Project-local tool/cache output
 .dart_appdata/
@@ -196,6 +195,9 @@ lib/env.g.dart
 *.keystore
 *.p12
 *.pfx
+*.p8
+*.pk8
+*.key
 *.mobileprovision
 *.cer
 *.der
@@ -206,6 +208,25 @@ lib/env.g.dart
 *.msixbundle
 *.appx
 *.appxbundle
+*.ipa
+*.xcarchive/
+
+# Provider credentials and service-account downloads
+**/google-services.json
+**/GoogleService-Info.plist
+**/client_secret*.json
+**/credentials*.json
+**/service-account*.json
+**/service_account*.json
+
+# Local databases, password-manager stores, and diagnostic dumps
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.kdbx
+*.hprof
+*.dmp
 
 # Temporary/editor artifacts
 *.tmp

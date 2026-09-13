@@ -1,9 +1,10 @@
 // ignore_for_file: camel_case_types
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:cryptography/cryptography.dart' as crypto;
 import 'package:crypto/crypto.dart' as dart_crypto;
@@ -11,19 +12,8 @@ import 'package:path/path.dart' as p;
 import 'package:sqlite3/sqlite3.dart' as sqlite;
 import 'package:typed_data/typed_buffers.dart';
 import 'globals.dart';
-import 'native_core.dart';
+import 'vault_format.dart';
 
-// ---------------------------------------------------------------------------
-// .ktn file format
-// ---------------------------------------------------------------------------
-// v3: [4-byte magic "KTN3"] [12-byte ChaCha20 nonce]
-//               [16-byte Argon2id salt] [ciphertext+16-byte Poly1305 MAC]
-//   Key: Argon2id(memory=64MB, parallelism=2, iterations=3) -> 32 bytes.
-//   A fresh random nonce and salt are written on every save.
-// ---------------------------------------------------------------------------
-
-// 4-byte magic that identifies a v3 file.
-const List<int> _kV3Magic = [0x4B, 0x54, 0x4E, 0x33]; // "KTN3"
 const String _memorySqlitePath = '/keytitan.sqlite';
 
 Uint8List _secureRandomBytes(int length) {
@@ -33,24 +23,63 @@ Uint8List _secureRandomBytes(int length) {
 
 class passFile {
   final String fileName; // full path to the .ktn file
-  Uint8List _passwordBytes; // zeroed on dispose or password change
+  Uint8List? _passwordBytes; // Retained only until KTN4 unlock/wrapping.
+  Uint8List? _vaultKeyBytes; // Random KTN4 DEK, zeroed when the vault locks.
+  Ktn4KeyEnvelope? _keyEnvelope;
+  int _revision = 0;
+  bool _loadedFromV3 = false;
+  bool _dirty = false;
+  String _autofillSessionEpoch = _newAutofillSessionEpoch();
 
   Database? _db;
+  bool _preventInitialOverwrite = false;
+  Future<void> _operationTail = Future<void>.value();
+  String? _diskFingerprint;
+  String? get diskFingerprint => _diskFingerprint;
+
+  Future<bool> get isCurrentOnDisk async {
+    final f = File(fileName);
+    return await f.exists() &&
+        dart_crypto.sha256
+                .convert(await f.readAsBytes())
+                .toString()
+                .toUpperCase() ==
+            _diskFingerprint;
+  }
 
   passFile(this.fileName, String password)
       : _passwordBytes = Uint8List.fromList(utf8.encode(password));
 
-  // Expose key material only for field-level decryption. Do not hold the
-  // returned reference longer than the immediate call.
-  Uint8List get passwordBytes => _passwordBytes;
+  bool get needsSave =>
+      _dirty || _loadedFromV3 || _vaultKeyBytes == null || _keyEnvelope == null;
+
+  String? get autofillVaultId {
+    final vaultId = _keyEnvelope?.vaultId;
+    if (vaultId == null) return null;
+    return base64Url.encode(vaultId).replaceAll('=', '');
+  }
+
+  String get autofillSessionEpoch => _autofillSessionEpoch;
+
+  static String _newAutofillSessionEpoch() =>
+      base64Url.encode(_secureRandomBytes(18)).replaceAll('=', '');
+
+  void _rotateAutofillSessionEpoch() {
+    _autofillSessionEpoch = _newAutofillSessionEpoch();
+  }
 
   // ---------------------------------------------------------------------------
   // Lifecycle
   // ---------------------------------------------------------------------------
 
   Future<void> dispose() async {
+    await _operationTail;
     await _closeDb();
-    _passwordBytes.fillRange(0, _passwordBytes.length, 0);
+    _clearMasterPassword();
+    final vaultKey = _vaultKeyBytes;
+    vaultKey?.fillRange(0, vaultKey.length, 0);
+    _vaultKeyBytes = null;
+    _keyEnvelope = null;
   }
 
   Future<void> _closeDb() async {
@@ -62,11 +91,12 @@ class passFile {
 
   // Opens a blank in-memory database. Call this when creating a new file.
   Future<void> newSQLFile() async {
-    try {
-      await _initDatabase();
-    } catch (e) {
-      debugPrint('Error initialising in-memory DB: $e');
-    }
+    await _initDatabase();
+    _vaultKeyBytes = _secureRandomBytes(KeyTitanVaultCodec.keyLength);
+    _loadedFromV3 = false;
+    _revision = 0;
+    _dirty = true;
+    _preventInitialOverwrite = true;
   }
 
   Future<Database> _initDatabase() async {
@@ -93,140 +123,232 @@ class passFile {
   }
 
   // ---------------------------------------------------------------------------
-  // Key derivation
-  // ---------------------------------------------------------------------------
-
-  // Argon2id with OWASP-recommended interactive-login parameters.
-  // Returns 32 bytes; caller must zero after use.
-  Future<Uint8List> _deriveKeyArgon2id(
-      Uint8List passBytes, Uint8List salt) async {
-    final argon2 = crypto.Argon2id(
-      memory: 65536,
-      parallelism: 2,
-      iterations: 3,
-      hashLength: 32,
-    );
-    final secretKey = await argon2.deriveKeyFromPassword(
-      password: utf8.decode(passBytes, allowMalformed: true),
-      nonce: salt,
-    );
-    return Uint8List.fromList(await secretKey.extractBytes());
-  }
-
-  // ---------------------------------------------------------------------------
   // Encrypt / Decrypt
   // ---------------------------------------------------------------------------
 
-  // Reads a v3 .ktn file, decrypts it, and loads the result into an in-memory
-  // SQLite database.
-  Future<bool> attemptDecrypt() async {
+  // KTN3 remains readable for migration. KTN4 unwraps its random vault key with
+  // the supplied master password, then discards the master password bytes.
+  Future<bool> attemptDecrypt() => _runSerialized(_attemptDecryptOnce);
+
+  Future<bool> _attemptDecryptOnce() async {
     try {
       final f = File(fileName);
       if (!await f.exists()) return false;
       final encData = await f.readAsBytes();
+      _diskFingerprint =
+          dart_crypto.sha256.convert(encData).toString().toUpperCase();
+      final password = _passwordBytes;
+      if (password == null) return false;
 
-      // Layout: [4 magic][12 nonce][16 salt][ciphertext+16 MAC] -> min 49 bytes
-      if (encData.length < 49 || !_hasV3Magic(encData)) {
-        return false;
-      }
-
-      final nativeDecrypted =
-          KeyTitanNativeCore.instance?.decryptVault(encData, _passwordBytes);
-      if (nativeDecrypted != null) {
-        try {
-          if (_isValidSqliteBytes(nativeDecrypted)) {
-            await _loadDbFromBytes(nativeDecrypted);
+      switch (KeyTitanVaultCodec.detectVersion(encData)) {
+        case KeyTitanVaultVersion.v4:
+          final decoded = await KeyTitanVaultCodec.decryptV4(encData, password);
+          if (decoded == null) return false;
+          var accepted = false;
+          try {
+            await _loadDbFromBytes(decoded.sqliteBytes);
+            _vaultKeyBytes = decoded.vaultKey;
+            _keyEnvelope = decoded.envelope;
+            _revision = decoded.revision;
+            _loadedFromV3 = false;
+            _dirty = false;
+            _clearMasterPassword();
+            accepted = true;
             return true;
+          } finally {
+            if (!accepted) {
+              decoded.vaultKey.fillRange(0, decoded.vaultKey.length, 0);
+            }
           }
-        } finally {
-          nativeDecrypted.fillRange(0, nativeDecrypted.length, 0);
-        }
+        case KeyTitanVaultVersion.v3:
+          final decrypted =
+              await KeyTitanVaultCodec.decryptV3(encData, password);
+          if (decrypted == null) return false;
+          await _loadDbFromBytes(decrypted);
+          _vaultKeyBytes = null;
+          _keyEnvelope = null;
+          _revision = 0;
+          _loadedFromV3 = true;
+          _dirty = false;
+          return true;
+        case KeyTitanVaultVersion.unknown:
+          return false;
       }
-
-      final nonce = encData.sublist(4, 16);
-      final salt = encData.sublist(16, 32);
-      final cipherPayload = encData.sublist(32);
-
-      final keyBytes =
-          await _deriveKeyArgon2id(_passwordBytes, Uint8List.fromList(salt));
-      Uint8List? decrypted;
-      try {
-        decrypted = await _chaCha20Decrypt(keyBytes, nonce, cipherPayload);
-      } finally {
-        keyBytes.fillRange(0, keyBytes.length, 0);
-      }
-
-      if (decrypted != null) {
-        try {
-          if (_isValidSqliteBytes(decrypted)) {
-            await _loadDbFromBytes(decrypted);
-            return true;
-          }
-        } finally {
-          decrypted.fillRange(0, decrypted.length, 0);
-        }
-      }
-
-      return false;
     } catch (e) {
       debugPrint('Decryption error: $e');
       return false;
     }
   }
 
-  // Serialises the in-memory DB, encrypts it with ChaCha20-Poly1305 (v3),
-  // and writes the file back to fileName.
-  Future<bool> attemptEncrypt() async {
-    if (_db == null || !_db!.isOpen) return false;
-
-    try {
-      final rawBytes = await _exportDbToBytes();
+  Future<T> _runSerialized<T>(Future<T> Function() operation) {
+    final completer = Completer<T>();
+    _operationTail = _operationTail.then((_) async {
       try {
-        final nativeEncrypted =
-            KeyTitanNativeCore.instance?.encryptVault(rawBytes, _passwordBytes);
-        if (nativeEncrypted != null) {
-          try {
-            await _writeVaultBytesAtomic(nativeEncrypted);
-            return true;
-          } finally {
-            nativeEncrypted.fillRange(0, nativeEncrypted.length, 0);
-          }
-        }
-
-        final salt = _secureRandomBytes(16);
-        final nonce = _secureRandomBytes(12);
-
-        final keyBytes = await _deriveKeyArgon2id(_passwordBytes, salt);
-        final Uint8List cipherPayload;
-        try {
-          cipherPayload = await _chaCha20Encrypt(keyBytes, nonce, rawBytes);
-        } finally {
-          keyBytes.fillRange(0, keyBytes.length, 0);
-        }
-
-        // v3 layout: [4 magic "KTN3"][12 nonce][16 salt][ciphertext+16 MAC]
-        final out = Uint8List(4 + 12 + 16 + cipherPayload.length);
-        out.setRange(0, 4, _kV3Magic);
-        out.setRange(4, 16, nonce);
-        out.setRange(16, 32, salt);
-        out.setRange(32, out.length, cipherPayload);
-
-        await _writeVaultBytesAtomic(out);
-
-        return true;
-      } finally {
-        rawBytes.fillRange(0, rawBytes.length, 0);
+        completer.complete(await operation());
+      } catch (error, stackTrace) {
+        completer.completeError(error, stackTrace);
       }
+    });
+    return completer.future;
+  }
+
+  Uint8List _requireMasterPassword() {
+    final password = _passwordBytes;
+    if (password == null || password.isEmpty) {
+      throw StateError('The master password is not available.');
+    }
+    return password;
+  }
+
+  void _clearMasterPassword() {
+    final password = _passwordBytes;
+    password?.fillRange(0, password.length, 0);
+    _passwordBytes = null;
+  }
+
+  // Every successful save writes KTN4. A loaded KTN3 vault is migrated in
+  // memory first, and rolled back if wrapping, encryption, or persistence fails.
+  Future<bool> attemptEncrypt() => _runSerialized(_attemptEncryptOnce);
+
+  Future<bool> _attemptEncryptOnce() async {
+    if (_db == null || !_db!.isOpen) return false;
+    if (!needsSave) return true;
+
+    Uint8List? migrationKey;
+    var migrationApplied = false;
+    var migrationRollbackSucceeded = true;
+    var migrationUpdates = const <_PasswordCipherUpdate>[];
+    Uint8List? rawBytes;
+    try {
+      var vaultKey = _vaultKeyBytes;
+      var envelope = _keyEnvelope;
+
+      if (vaultKey == null) {
+        if (!_loadedFromV3) {
+          throw StateError('An initialized KTN4 vault has no vault key.');
+        }
+        migrationKey = _secureRandomBytes(KeyTitanVaultCodec.keyLength);
+        vaultKey = migrationKey;
+        _vaultKeyBytes = vaultKey;
+      }
+
+      if (_loadedFromV3) {
+        final masterPassword = _requireMasterPassword();
+        migrationUpdates = await _buildV3FieldMigrationUpdates(
+          masterPassword,
+          vaultKey,
+        );
+        await _applyPasswordCipherUpdates(
+          _db!,
+          migrationUpdates,
+          useNewCipher: true,
+        );
+        migrationApplied = true;
+      }
+
+      envelope ??= await KeyTitanVaultCodec.createEnvelope(
+        _requireMasterPassword(),
+        vaultKey,
+      );
+
+      rawBytes = await _exportDbToBytes();
+      final encoded = await KeyTitanVaultCodec.encryptV4(
+        rawBytes,
+        vaultKey,
+        envelope,
+        _revision,
+      );
+      try {
+        await _writeVaultBytesAtomic(encoded.bytes);
+        _diskFingerprint =
+            dart_crypto.sha256.convert(encoded.bytes).toString().toUpperCase();
+      } finally {
+        encoded.bytes.fillRange(0, encoded.bytes.length, 0);
+      }
+
+      _vaultKeyBytes = vaultKey;
+      _keyEnvelope = envelope;
+      _revision = encoded.revision;
+      _loadedFromV3 = false;
+      _dirty = false;
+      _clearMasterPassword();
+      migrationKey = null; // Ownership transferred to _vaultKeyBytes.
+      return true;
     } catch (e) {
+      if (migrationApplied) {
+        try {
+          await _applyPasswordCipherUpdates(
+            _db!,
+            migrationUpdates,
+            useNewCipher: false,
+          );
+        } catch (rollbackError) {
+          migrationRollbackSucceeded = false;
+          debugPrint('KTN3 migration rollback error: $rollbackError');
+        }
+      }
+      if (migrationKey != null) {
+        if (migrationRollbackSucceeded) {
+          if (identical(_vaultKeyBytes, migrationKey)) _vaultKeyBytes = null;
+          migrationKey.fillRange(0, migrationKey.length, 0);
+        } else {
+          // If an in-memory rollback itself fails, retain the recovery key.
+          // A later save can validate/finish any c20p1 -> c20p2 conversion
+          // instead of leaving converted fields with no usable key.
+          _vaultKeyBytes = migrationKey;
+          _dirty = true;
+          migrationKey = null;
+        }
+      }
       debugPrint('Encryption error: $e');
       return false;
+    } finally {
+      rawBytes?.fillRange(0, rawBytes.length, 0);
     }
   }
 
   Future<void> _writeVaultBytesAtomic(Uint8List bytes) async {
+    if (Platform.isAndroid) {
+      // Both Flutter engines use one native compare-and-swap commit queue.
+      await const MethodChannel('app.keytitan/vault_commit').invokeMethod<void>(
+        'commit',
+        {'path': fileName, 'expected': _diskFingerprint, 'bytes': bytes},
+      );
+      _diskFingerprint =
+          dart_crypto.sha256.convert(bytes).toString().toUpperCase();
+      _preventInitialOverwrite = false;
+      return;
+    }
     final target = File(fileName);
     final dir = target.parent;
     await dir.create(recursive: true);
+
+    // A new vault is edited in memory before its first save. Claim its path
+    // exclusively at the actual write boundary, closing the gap between the
+    // UI's name check and this first persistence operation.
+    if (_preventInitialOverwrite) {
+      var created = false;
+      try {
+        await target.create(exclusive: true);
+        created = true;
+        final raf = await target.open(mode: FileMode.writeOnly);
+        try {
+          await raf.writeFrom(bytes);
+          await raf.flush();
+        } finally {
+          await raf.close();
+        }
+        _preventInitialOverwrite = false;
+        return;
+      } catch (_) {
+        if (created && await target.exists()) {
+          try {
+            await target.delete();
+          } catch (_) {}
+        }
+        rethrow;
+      }
+    }
 
     final baseName = p.basename(fileName);
     final stamp = DateTime.now().microsecondsSinceEpoch;
@@ -243,6 +365,15 @@ class passFile {
       }
 
       final targetExists = await target.exists();
+      // On POSIX filesystems, rename over an existing file is atomic. Keep the
+      // previous vault continuously present until the flushed replacement is
+      // committed under its final name. Windows does not permit that rename,
+      // so it uses the recoverable backup/replace sequence below.
+      if (targetExists && !Platform.isWindows) {
+        await temp.rename(target.path);
+        return;
+      }
+
       if (targetExists) {
         await target.rename(backup.path);
       }
@@ -271,57 +402,6 @@ class passFile {
       }
       rethrow;
     }
-  }
-
-  // ---------------------------------------------------------------------------
-  // ChaCha20-Poly1305-AEAD helpers
-  // ---------------------------------------------------------------------------
-
-  static final _chacha20 = crypto.Chacha20.poly1305Aead();
-
-  Future<Uint8List> _chaCha20Encrypt(
-      Uint8List keyBytes, List<int> nonce, Uint8List plaintext) async {
-    final secretKey = await _chacha20.newSecretKeyFromBytes(keyBytes);
-    final secretBox = await _chacha20.encrypt(
-      plaintext,
-      secretKey: secretKey,
-      nonce: nonce,
-    );
-    // SecretBox layout: cipherText followed by 16-byte MAC
-    return Uint8List.fromList(secretBox.cipherText + secretBox.mac.bytes);
-  }
-
-  /// Returns null if MAC verification fails.
-  Future<Uint8List?> _chaCha20Decrypt(
-      Uint8List keyBytes, List<int> nonce, List<int> cipherPayload) async {
-    if (cipherPayload.length < 16) return null;
-    final cipherText = cipherPayload.sublist(0, cipherPayload.length - 16);
-    final macBytes = cipherPayload.sublist(cipherPayload.length - 16);
-
-    final secretKey = await _chacha20.newSecretKeyFromBytes(keyBytes);
-    final secretBox = crypto.SecretBox(
-      cipherText,
-      nonce: nonce,
-      mac: crypto.Mac(macBytes),
-    );
-    try {
-      final plain = await _chacha20.decrypt(secretBox, secretKey: secretKey);
-      return Uint8List.fromList(plain);
-    } on crypto.SecretBoxAuthenticationError {
-      return null;
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Magic-byte detection
-  // ---------------------------------------------------------------------------
-
-  bool _hasV3Magic(Uint8List data) {
-    if (data.length < 4) return false;
-    for (int i = 0; i < 4; i++) {
-      if (data[i] != _kV3Magic[i]) return false;
-    }
-    return true;
   }
 
   // ---------------------------------------------------------------------------
@@ -501,16 +581,6 @@ class passFile {
   }
 
   // ---------------------------------------------------------------------------
-  // Validation
-  // ---------------------------------------------------------------------------
-
-  bool _isValidSqliteBytes(Uint8List bytes) {
-    if (bytes.length < 16) return false;
-    return utf8.decode(bytes.sublist(0, 16), allowMalformed: true) ==
-        'SQLite format 3\u0000';
-  }
-
-  // ---------------------------------------------------------------------------
   // Database operations
   // ---------------------------------------------------------------------------
 
@@ -547,13 +617,20 @@ class passFile {
     return rows.isEmpty ? null : rows.first;
   }
 
-  Future<int> savePassword(keyTitanPass pass) async {
+  Future<int> savePassword(keyTitanPass pass) =>
+      _runSerialized(() => _savePasswordOnce(pass));
+
+  Future<int> _savePasswordOnce(keyTitanPass pass) async {
     final db = await _initDatabase();
     int catId = await getCategoryID(pass.category);
     if (catId == -1) catId = await insertCategory(pass.category);
 
-    final encryptedField =
-        await keyTitanPass.hencrypt(_passwordBytes, pass.displayPassword);
+    final vaultKey = _vaultKeyBytes;
+    final encryptedField = await keyTitanPass.hencrypt(
+      vaultKey ?? _requireMasterPassword(),
+      pass.displayPassword,
+      useVaultKey: vaultKey != null,
+    );
 
     final data = {
       'title': pass.title,
@@ -566,77 +643,229 @@ class passFile {
 
     if (pass.id == -1) {
       pass.id = await db.insert('password', data);
+      _dirty = true;
       return pass.id;
     } else {
       await db.update('password', data, where: 'id = ?', whereArgs: [pass.id]);
       await _pruneEmptyCategories(db);
+      _dirty = true;
       return pass.id;
     }
+  }
+
+  Future<String> decryptPassword(String cipherText) async {
+    if (cipherText.isEmpty) return '';
+
+    if (keyTitanPass.isVaultKeyCipher(cipherText)) {
+      final vaultKey = _vaultKeyBytes;
+      if (vaultKey == null) return keyTitanPass.decryptionError;
+      return keyTitanPass.hdecrypt(vaultKey, cipherText);
+    }
+    if (keyTitanPass.isLegacyCipher(cipherText)) {
+      final masterPassword = _passwordBytes;
+      if (masterPassword == null) return keyTitanPass.decryptionError;
+      return keyTitanPass.hdecrypt(masterPassword, cipherText);
+    }
+    return keyTitanPass.decryptionError;
   }
 
   Future<bool> changeMasterPassword({
     required String currentPassword,
     required String newPassword,
+  }) =>
+      _runSerialized(
+        () => _changeMasterPasswordOnce(
+          currentPassword: currentPassword,
+          newPassword: newPassword,
+        ),
+      );
+
+  Future<bool> _changeMasterPasswordOnce({
+    required String currentPassword,
+    required String newPassword,
   }) async {
     if (currentPassword.isEmpty || newPassword.isEmpty) return false;
 
-    final db = await _initDatabase();
+    await _initDatabase();
     final currentBytes = Uint8List.fromList(utf8.encode(currentPassword));
     final newBytes = Uint8List.fromList(utf8.encode(newPassword));
-    final oldBytes = _passwordBytes;
-    final updates = <_PasswordCipherUpdate>[];
-    var dbUpdated = false;
-    var newBytesOwnedByFile = false;
+    final oldVaultKey = _vaultKeyBytes;
+    final oldEnvelope = _keyEnvelope;
+    final oldDirty = _dirty;
+    Uint8List? replacementKey;
+    Ktn4KeyEnvelope? replacementEnvelope;
+    var rekeyApplied = false;
+    var rekeyUpdates = const <_PasswordCipherUpdate>[];
 
-    try {
-      if (!_constantTimeEquals(oldBytes, currentBytes)) return false;
-
-      final rows = await db.query('password', columns: ['id', 'password']);
-      for (final row in rows) {
-        final id = row['id'] as int;
-        final oldCipher = row['password']?.toString() ?? '';
-        final plainText = await keyTitanPass.hdecrypt(oldBytes, oldCipher);
-        if (plainText == keyTitanPass.decryptionError) return false;
-
-        final newCipher = await keyTitanPass.hencrypt(newBytes, plainText);
-        updates.add(_PasswordCipherUpdate(id, oldCipher, newCipher));
-      }
-
-      await _applyPasswordCipherUpdates(db, updates, useNewCipher: true);
-      dbUpdated = true;
-
-      _passwordBytes = newBytes;
-      newBytesOwnedByFile = true;
-
-      if (await attemptEncrypt()) {
-        oldBytes.fillRange(0, oldBytes.length, 0);
-        return true;
-      }
-
-      _passwordBytes = oldBytes;
-      newBytesOwnedByFile = false;
-      await _applyPasswordCipherUpdates(db, updates, useNewCipher: false);
-      return false;
-    } catch (e) {
-      debugPrint('Password change error: $e');
-      if (identical(_passwordBytes, newBytes)) {
-        _passwordBytes = oldBytes;
-        newBytesOwnedByFile = false;
-      }
-      if (dbUpdated) {
+    Future<void> restoreAfterFailure() async {
+      _keyEnvelope = oldEnvelope;
+      var rollbackSucceeded = true;
+      if (rekeyApplied) {
         try {
-          await _applyPasswordCipherUpdates(db, updates, useNewCipher: false);
+          await _applyPasswordCipherUpdates(
+            _db!,
+            rekeyUpdates,
+            useNewCipher: false,
+          );
         } catch (rollbackError) {
+          rollbackSucceeded = false;
           debugPrint('Password change rollback error: $rollbackError');
         }
       }
+
+      if (rollbackSucceeded) {
+        _vaultKeyBytes = oldVaultKey;
+        _dirty = oldDirty;
+        return;
+      }
+
+      // Preserve the replacement key and its envelope if an in-memory rekey
+      // could not be rolled back. A later save can persist this internally
+      // consistent state instead of leaving rekeyed fields unreadable.
+      _vaultKeyBytes = replacementKey;
+      _keyEnvelope = replacementEnvelope;
+      _dirty = true;
+      _rotateAutofillSessionEpoch();
+      replacementKey = null;
+    }
+
+    try {
+      final bool passwordMatches;
+      if (oldVaultKey != null && oldEnvelope != null) {
+        passwordMatches = await KeyTitanVaultCodec.passwordUnlocksEnvelope(
+          currentBytes,
+          oldVaultKey,
+          oldEnvelope,
+        );
+      } else {
+        final storedPassword = _passwordBytes;
+        passwordMatches = storedPassword != null &&
+            _constantTimeEquals(storedPassword, currentBytes);
+      }
+      if (!passwordMatches) return false;
+
+      // Invalidate every in-flight autofill capability before the DEK starts
+      // transitioning, including paths that later roll back.
+      _rotateAutofillSessionEpoch();
+      replacementKey = _secureRandomBytes(KeyTitanVaultCodec.keyLength);
+      replacementEnvelope = await KeyTitanVaultCodec.createEnvelope(
+        newBytes,
+        replacementKey!,
+        vaultId: oldEnvelope?.vaultId,
+      );
+
+      rekeyUpdates = await _buildPasswordChangeFieldUpdates(
+        oldVaultKey: oldVaultKey,
+        legacyMasterPassword: _passwordBytes,
+        replacementKey: replacementKey!,
+      );
+      await _applyPasswordCipherUpdates(
+        _db!,
+        rekeyUpdates,
+        useNewCipher: true,
+      );
+      rekeyApplied = true;
+
+      _vaultKeyBytes = replacementKey;
+      _keyEnvelope = replacementEnvelope;
+      _dirty = true;
+
+      if (await _attemptEncryptOnce()) {
+        oldVaultKey?.fillRange(0, oldVaultKey.length, 0);
+        _rotateAutofillSessionEpoch();
+        replacementKey = null; // Ownership transferred to _vaultKeyBytes.
+        return true;
+      }
+
+      await restoreAfterFailure();
+      return false;
+    } catch (e) {
+      debugPrint('Password change error: $e');
+      await restoreAfterFailure();
       return false;
     } finally {
       currentBytes.fillRange(0, currentBytes.length, 0);
-      if (!newBytesOwnedByFile) {
-        newBytes.fillRange(0, newBytes.length, 0);
-      }
+      newBytes.fillRange(0, newBytes.length, 0);
+      final keyToWipe = replacementKey;
+      keyToWipe?.fillRange(0, keyToWipe.length, 0);
     }
+  }
+
+  Future<List<_PasswordCipherUpdate>> _buildPasswordChangeFieldUpdates({
+    required Uint8List? oldVaultKey,
+    required Uint8List? legacyMasterPassword,
+    required Uint8List replacementKey,
+  }) async {
+    final rows = await _db!.query('password', columns: ['id', 'password']);
+    final updates = <_PasswordCipherUpdate>[];
+    for (final row in rows) {
+      final oldCipher = row['password']?.toString() ?? '';
+      if (oldCipher.isEmpty) continue;
+
+      final Uint8List decryptKey;
+      if (keyTitanPass.isVaultKeyCipher(oldCipher)) {
+        if (oldVaultKey == null) {
+          throw StateError('A c20p2 field has no current vault key.');
+        }
+        decryptKey = oldVaultKey;
+      } else if (keyTitanPass.isLegacyCipher(oldCipher)) {
+        if (legacyMasterPassword == null) {
+          throw StateError('A c20p1 field has no legacy master password.');
+        }
+        decryptKey = legacyMasterPassword;
+      } else {
+        throw StateError('Vault contains an unsupported field cipher.');
+      }
+
+      final plainText = await keyTitanPass.hdecrypt(decryptKey, oldCipher);
+      if (plainText == keyTitanPass.decryptionError) {
+        throw StateError('Could not decrypt a password field while rekeying.');
+      }
+      final newCipher = await keyTitanPass.hencrypt(
+        replacementKey,
+        plainText,
+        useVaultKey: true,
+      );
+      updates.add(
+        _PasswordCipherUpdate(row['id'] as int, oldCipher, newCipher),
+      );
+    }
+    return updates;
+  }
+
+  Future<List<_PasswordCipherUpdate>> _buildV3FieldMigrationUpdates(
+    Uint8List masterPassword,
+    Uint8List vaultKey,
+  ) async {
+    final rows = await _db!.query('password', columns: ['id', 'password']);
+    final updates = <_PasswordCipherUpdate>[];
+    for (final row in rows) {
+      final oldCipher = row['password']?.toString() ?? '';
+      if (oldCipher.isEmpty) continue;
+      if (keyTitanPass.isVaultKeyCipher(oldCipher)) {
+        final plainText = await keyTitanPass.hdecrypt(vaultKey, oldCipher);
+        if (plainText == keyTitanPass.decryptionError) {
+          throw StateError('Could not validate a migrated password field.');
+        }
+        continue;
+      }
+      if (!keyTitanPass.isLegacyCipher(oldCipher)) {
+        throw StateError('KTN3 vault contains an unsupported field cipher.');
+      }
+      final plainText = await keyTitanPass.hdecrypt(masterPassword, oldCipher);
+      if (plainText == keyTitanPass.decryptionError) {
+        throw StateError('Could not decrypt a KTN3 password field.');
+      }
+      final newCipher = await keyTitanPass.hencrypt(
+        vaultKey,
+        plainText,
+        useVaultKey: true,
+      );
+      updates.add(
+        _PasswordCipherUpdate(row['id'] as int, oldCipher, newCipher),
+      );
+    }
+    return updates;
   }
 
   Future<void> _applyPasswordCipherUpdates(
@@ -677,14 +906,20 @@ class passFile {
 
   Future<int> insertCategory(String category) async {
     final db = await _initDatabase();
-    return db.insert('category', {'category': category},
+    final id = await db.insert('category', {'category': category},
         conflictAlgorithm: ConflictAlgorithm.ignore);
+    _dirty = true;
+    return id;
   }
 
-  Future<void> deletePassword(int id) async {
+  Future<void> deletePassword(int id) =>
+      _runSerialized(() => _deletePasswordOnce(id));
+
+  Future<void> _deletePasswordOnce(int id) async {
     final db = await _initDatabase();
     await db.delete('password', where: 'id = ?', whereArgs: [id]);
     await _pruneEmptyCategories(db);
+    _dirty = true;
   }
 
   Future<void> _pruneEmptyCategories(Database db) async {
@@ -783,31 +1018,52 @@ class keyTitanPass {
   // Field-level ChaCha20-Poly1305 encryption
   //
   // Individual password fields are encrypted inside the SQLite DB as a second
-  // layer. This prevents password values from sitting plainly in SQLite pages
-  // while the vault is open, but it is not a defense against full process-memory
-  // compromise because the master password also lives in process memory.
+  // layer. KTN3 fields use c20p1 with the master password as their seed. KTN4
+  // fields use c20p2 with the random vault key, allowing master-password bytes
+  // to be discarded immediately after unlock.
   // ---------------------------------------------------------------------------
 
-  static const String _fieldCipherPrefix = 'c20p1';
+  static const String _legacyFieldCipherPrefix = 'c20p1';
+  static const String _vaultKeyFieldCipherPrefix = 'c20p2';
   static const String decryptionError = '[Decryption Error]';
   static final _fieldCipher = crypto.Chacha20.poly1305Aead();
 
-  static Uint8List _deriveFieldKey(Uint8List seedBytes) {
-    final digest = dart_crypto.sha256.convert([
-      ...utf8.encode('KeyTitan field encryption v1'),
-      ...seedBytes,
-    ]);
+  static bool isLegacyCipher(String cipherText) =>
+      cipherText.startsWith('$_legacyFieldCipherPrefix:');
+
+  static bool isVaultKeyCipher(String cipherText) =>
+      cipherText.startsWith('$_vaultKeyFieldCipherPrefix:');
+
+  static Uint8List _deriveFieldKey(
+    Uint8List seedBytes, {
+    required bool useVaultKey,
+  }) {
+    final labelBytes = utf8.encode(
+      useVaultKey
+          ? 'KeyTitan field encryption v2'
+          : 'KeyTitan field encryption v1',
+    );
+    // c20p1 must retain its historical derivation exactly. c20p2 starts from
+    // a uniformly random 256-bit DEK, so HMAC-SHA-256 is a conventional,
+    // domain-separated PRF for deriving its independent field-encryption key.
+    final digest = useVaultKey
+        ? dart_crypto.Hmac(dart_crypto.sha256, seedBytes).convert(labelBytes)
+        : dart_crypto.sha256.convert([...labelBytes, ...seedBytes]);
     return Uint8List.fromList(digest.bytes);
   }
 
-  static Future<String> hencrypt(Uint8List seedBytes, String plainText) async {
+  static Future<String> hencrypt(
+    Uint8List seedBytes,
+    String plainText, {
+    bool useVaultKey = false,
+  }) async {
     if (plainText.isEmpty) return '';
-    final nativeEncrypted =
-        KeyTitanNativeCore.instance?.fieldEncrypt(seedBytes, plainText);
-    if (nativeEncrypted != null) return nativeEncrypted;
 
     final nonce = _secureRandomBytes(12);
-    final keyBytes = _deriveFieldKey(seedBytes);
+    final keyBytes = _deriveFieldKey(
+      seedBytes,
+      useVaultKey: useVaultKey,
+    );
     try {
       final secretKey = await _fieldCipher.newSecretKeyFromBytes(keyBytes);
       final box = await _fieldCipher.encrypt(
@@ -816,7 +1072,9 @@ class keyTitanPass {
         nonce: nonce,
       );
       final payload = Uint8List.fromList(box.cipherText + box.mac.bytes);
-      return '$_fieldCipherPrefix:${base64.encode(nonce)}:${base64.encode(payload)}';
+      final prefix =
+          useVaultKey ? _vaultKeyFieldCipherPrefix : _legacyFieldCipherPrefix;
+      return '$prefix:${base64.encode(nonce)}:${base64.encode(payload)}';
     } finally {
       keyBytes.fillRange(0, keyBytes.length, 0);
     }
@@ -825,11 +1083,7 @@ class keyTitanPass {
   static Future<String> hdecrypt(Uint8List seedBytes, String cipherText) async {
     if (cipherText.isEmpty) return '';
 
-    final nativeDecrypted =
-        KeyTitanNativeCore.instance?.fieldDecrypt(seedBytes, cipherText);
-    if (nativeDecrypted != null) return nativeDecrypted;
-
-    if (!cipherText.startsWith('$_fieldCipherPrefix:')) {
+    if (!isLegacyCipher(cipherText) && !isVaultKeyCipher(cipherText)) {
       return decryptionError;
     }
 
@@ -849,7 +1103,10 @@ class keyTitanPass {
         return decryptionError;
       }
 
-      final keyBytes = _deriveFieldKey(seedBytes);
+      final keyBytes = _deriveFieldKey(
+        seedBytes,
+        useVaultKey: isVaultKeyCipher(cipherText),
+      );
       try {
         final secretKey = await _fieldCipher.newSecretKeyFromBytes(keyBytes);
         final box = crypto.SecretBox(
@@ -875,36 +1132,18 @@ class keyTitanPass {
   }
 
   static String deriveUris(String site) {
-    final nativeUris = KeyTitanNativeCore.instance?.deriveUris(site);
-    if (nativeUris != null) return nativeUris;
-
     final raw = site.trim();
     if (raw.isEmpty) return '[]';
 
+    // Explicit origins retain their scheme and port. Never invent aliases.
+    if (raw.contains('://')) return jsonEncode([raw]);
     final values = <String>{raw};
-    final lowerRaw = raw.toLowerCase();
-    if (lowerRaw.startsWith('androidapp://') || lowerRaw.startsWith('app://')) {
-      final packageName = lowerRaw.split('://').last.split('/').first;
-      if (packageName.isNotEmpty) values.add(packageName);
-      return jsonEncode(values.toList());
-    }
-
-    final parsed = raw.contains('://') ? Uri.tryParse(raw) : null;
-    final host = parsed?.host.isNotEmpty == true
-        ? parsed!.host.toLowerCase()
-        : raw
-            .replaceFirst(RegExp(r'^https?://', caseSensitive: false), '')
-            .split('/')
-            .first
-            .toLowerCase();
+    final host = raw.split('/').first.toLowerCase();
 
     if (host.isNotEmpty) {
       values.add(host);
       if (host.contains('.')) {
         values.add('https://$host');
-        if (!host.startsWith('www.')) {
-          values.add('https://www.$host');
-        }
       }
     }
 

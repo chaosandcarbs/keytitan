@@ -2,4 +2,4 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
-cargo build --release --target x86_64-unknown-linux-gnu
+cargo build --locked --release --target x86_64-unknown-linux-gnu

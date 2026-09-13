@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
-import 'passwords.dart'; 
+import 'passwords.dart';
 import 'globals.dart';
 
 class KeyTitanNew extends StatefulWidget {
@@ -22,6 +22,7 @@ class _KeyTitanNewState extends State<KeyTitanNew> {
   final _filePathController = TextEditingController();
   final _passController = TextEditingController();
   final _verifyController = TextEditingController();
+  bool _isCreating = false;
 
   @override
   void initState() {
@@ -57,23 +58,74 @@ class _KeyTitanNewState extends State<KeyTitanNew> {
   }
 
   Future<void> _handleCreateFile() async {
-    if (!_formKey.currentState!.validate()) return;
+    if (_isCreating || !_formKey.currentState!.validate()) return;
 
     final name = _fileNameController.text.trim();
-    final dir = _filePathController.text;
+    final dir = _filePathController.text.trim();
     final pass = _passController.text;
+    final fileName = '$name${KeyTitanVaultFiles.extension}';
+    final fullPath = p.join(dir, fileName);
 
-    _passController.clear();
-    _verifyController.clear();
+    setState(() => _isCreating = true);
 
-    final fullPath = p.join(dir, '$name${KeyTitanVaultFiles.extension}');
-    final pFile = passFile(fullPath, pass);
+    try {
+      final existingPath =
+          await KeyTitanVaultFiles.findExistingVault(dir, fileName);
+      if (existingPath != null) {
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: Constants.dialogColor,
+            title: const Text(
+              'Vault already exists',
+              style: TextStyle(color: Colors.redAccent),
+            ),
+            content: Text(
+              'A vault named "${p.basename(existingPath)}" already exists in '
+              'this directory. Choose a different filename. No files were changed.',
+              style: const TextStyle(color: Colors.white),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  'Choose another name',
+                  style: TextStyle(color: Colors.blue),
+                ),
+              ),
+            ],
+          ),
+        );
+        return;
+      }
 
-    await pFile.newSQLFile();
+      final pFile = passFile(fullPath, pass);
+      try {
+        await pFile.newSQLFile();
+      } catch (e) {
+        await pFile.dispose();
+        rethrow;
+      }
 
-    if (!mounted) return;
-    Navigator.of(context, rootNavigator: true).pop();
-    Navigator.pushNamed(context, KeyTitan.passList, arguments: pFile);
+      _passController.clear();
+      _verifyController.clear();
+
+      if (!mounted) {
+        await pFile.dispose();
+        return;
+      }
+      Navigator.of(context, rootNavigator: true).pop();
+      Navigator.pushNamed(context, KeyTitan.passList, arguments: pFile);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not create vault: $e')),
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isCreating = false);
+    }
   }
 
   @override
@@ -109,13 +161,21 @@ class _KeyTitanNewState extends State<KeyTitanNew> {
                             isPrimary: false),
                         const SizedBox(height: 30),
                         ElevatedButton(
-                          onPressed: _handleCreateFile,
+                          onPressed: _isCreating ? null : _handleCreateFile,
                           style: ElevatedButton.styleFrom(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 40, vertical: 15),
                             foregroundColor: Constants.lightText,
                           ),
-                          child: const Text('Create Password File'),
+                          child: _isCreating
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Text('Create Password File'),
                         ),
                         const Spacer(),
                         TextButton.icon(

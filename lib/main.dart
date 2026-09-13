@@ -11,6 +11,13 @@ import 'drivesync.dart';
 import 'passlist.dart';
 import 'settings.dart';
 import 'globals.dart';
+import 'autofill_session.dart';
+
+@pragma('vm:entry-point')
+void autofillMain() {
+  _initMobile();
+  runApp(const KeyTitanAutofillApp());
+}
 
 void main() {
   if (Constants.isDesktop) {

@@ -8,7 +8,7 @@ import 'autofill.dart';
 import 'globals.dart';
 
 enum PasswordOutputMode {
-  clipboard(label: 'Clipboard', storageValue: 'clipboard'),
+  clipboard(label: 'Clipboard Only', storageValue: 'clipboard'),
   autofill(label: 'Autofill', storageValue: 'autofill');
 
   final String label;
@@ -33,6 +33,7 @@ class KeyTitanSettingsData {
   static const List<int> autoLockDelayOptions = [15, 30, 60, 300, 0];
 
   final PasswordOutputMode outputMode;
+  final bool androidAutofillEnabled;
   final bool clearClipboardAfterCopy;
   final int clipboardClearDelaySeconds;
   final bool showPlaintextOnEdit;
@@ -42,6 +43,7 @@ class KeyTitanSettingsData {
 
   const KeyTitanSettingsData({
     this.outputMode = PasswordOutputMode.clipboard,
+    this.androidAutofillEnabled = true,
     this.clearClipboardAfterCopy = true,
     this.clipboardClearDelaySeconds = 15,
     this.showPlaintextOnEdit = false,
@@ -52,6 +54,7 @@ class KeyTitanSettingsData {
 
   KeyTitanSettingsData copyWith({
     PasswordOutputMode? outputMode,
+    bool? androidAutofillEnabled,
     bool? clearClipboardAfterCopy,
     int? clipboardClearDelaySeconds,
     bool? showPlaintextOnEdit,
@@ -61,6 +64,8 @@ class KeyTitanSettingsData {
   }) {
     return KeyTitanSettingsData(
       outputMode: outputMode ?? this.outputMode,
+      androidAutofillEnabled:
+          androidAutofillEnabled ?? this.androidAutofillEnabled,
       clearClipboardAfterCopy:
           clearClipboardAfterCopy ?? this.clearClipboardAfterCopy,
       clipboardClearDelaySeconds:
@@ -70,8 +75,7 @@ class KeyTitanSettingsData {
           showAutofillUriOverrides ?? this.showAutofillUriOverrides,
       autofillAttemptWindowSeconds:
           autofillAttemptWindowSeconds ?? this.autofillAttemptWindowSeconds,
-      autoLockDelaySeconds:
-          autoLockDelaySeconds ?? this.autoLockDelaySeconds,
+      autoLockDelaySeconds: autoLockDelaySeconds ?? this.autoLockDelaySeconds,
     );
   }
 
@@ -91,16 +95,16 @@ class KeyTitanSettingsData {
     final parsedAutoLockDelayInt = parsedAutoLockDelay is int
         ? parsedAutoLockDelay
         : int.tryParse(parsedAutoLockDelay?.toString() ?? '');
-    final migratedAutoLockDelay =
-        json.containsKey('autoLockOnBackground') &&
-                !json.containsKey('autoLockDelaySeconds')
-            ? (json['autoLockOnBackground'] == true ? 30 : 0)
-            : 30;
+    final migratedAutoLockDelay = json.containsKey('autoLockOnBackground') &&
+            !json.containsKey('autoLockDelaySeconds')
+        ? (json['autoLockOnBackground'] == true ? 30 : 0)
+        : 30;
 
     return KeyTitanSettingsData(
       outputMode: _supportsAutofillMode
           ? parsedOutputMode
           : PasswordOutputMode.clipboard,
+      androidAutofillEnabled: json['androidAutofillEnabled'] != false,
       clearClipboardAfterCopy: json.containsKey('clearClipboardAfterCopy')
           ? json['clearClipboardAfterCopy'] == true
           : true,
@@ -124,6 +128,7 @@ class KeyTitanSettingsData {
         _supportsAutofillMode ? outputMode : PasswordOutputMode.clipboard;
     return {
       'outputMode': persistedOutputMode.storageValue,
+      'androidAutofillEnabled': androidAutofillEnabled,
       'clearClipboardAfterCopy': clearClipboardAfterCopy,
       'clipboardClearDelaySeconds': clipboardClearDelaySeconds,
       'showPlaintextOnEdit': showPlaintextOnEdit,
@@ -166,7 +171,7 @@ class KeyTitanSettingsData {
   }
 }
 
-bool get _supportsAutofillMode => Constants.isMobile;
+bool get _supportsAutofillMode => KeyTitanAutofillBridge.isAvailable;
 
 class KeyTitanSettingsStore {
   static const _settingsFileName = 'keytitan_settings.json';
@@ -254,6 +259,11 @@ class KeyTitanSettings extends StatefulWidget {
 }
 
 class _KeyTitanSettingsState extends State<KeyTitanSettings> {
+  static final _settingsLinkStyle = TextButton.styleFrom(
+    foregroundColor: Colors.white,
+    textStyle: const TextStyle(
+        decoration: TextDecoration.underline, decorationColor: Colors.white),
+  );
   KeyTitanSettingsData _settings = const KeyTitanSettingsData();
   bool _isLoading = true;
 
@@ -266,7 +276,10 @@ class _KeyTitanSettingsState extends State<KeyTitanSettings> {
   Future<void> _loadSettings() async {
     final settings = await KeyTitanSettingsStore.load();
     await KeyTitanAutofillBridge.configure(
-      enabled: settings.outputMode == PasswordOutputMode.autofill,
+      enabled: Platform.isAndroid
+          ? settings.androidAutofillEnabled
+          : _supportsAutofillMode &&
+              settings.outputMode == PasswordOutputMode.autofill,
       attemptWindowSeconds: settings.autofillAttemptWindowSeconds,
     );
     if (!mounted) return;
@@ -280,7 +293,10 @@ class _KeyTitanSettingsState extends State<KeyTitanSettings> {
     setState(() => _settings = settings);
     await KeyTitanSettingsStore.save(settings);
     await KeyTitanAutofillBridge.configure(
-      enabled: settings.outputMode == PasswordOutputMode.autofill,
+      enabled: Platform.isAndroid
+          ? settings.androidAutofillEnabled
+          : _supportsAutofillMode &&
+              settings.outputMode == PasswordOutputMode.autofill,
       attemptWindowSeconds: settings.autofillAttemptWindowSeconds,
     );
   }
@@ -299,6 +315,49 @@ class _KeyTitanSettingsState extends State<KeyTitanSettings> {
             : ListView(
                 padding: const EdgeInsets.fromLTRB(20, 24, 20, 70),
                 children: [
+                  if (Platform.isAndroid)
+                    _buildPanel(
+                      title: 'Android autofill',
+                      children: [
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Offer KeyTitan in other apps'),
+                          subtitle: const Text(
+                              'Unlock your vault when filling or saving a login. Works independently of clipboard output.'),
+                          value: _settings.androidAutofillEnabled,
+                          onChanged: (value) => _updateSettings(_settings
+                              .copyWith(androidAutofillEnabled: value)),
+                        ),
+                        TextButton.icon(
+                            style: _settingsLinkStyle,
+                            icon: const Icon(Icons.open_in_new, size: 18),
+                            onPressed: KeyTitanAutofillBridge.enableService,
+                            label: const Text(
+                                'Select KeyTitan in Android settings')),
+                        TextButton.icon(
+                            style: _settingsLinkStyle,
+                            icon: const Icon(Icons.info_outline, size: 18),
+                            onPressed: () async {
+                              final status =
+                                  await KeyTitanAutofillBridge.status();
+                              if (!context.mounted) return;
+                              showDialog<void>(
+                                  context: context,
+                                  builder: (context) => AlertDialog(
+                                        title: const Text('Autofill status'),
+                                        content: Text(
+                                            'Selected in Android: ${status['selected']}\nLast request: ${status['lastResult']}\n\nIn your browser, select the Android/system autofill provider. Tap a login field to start. No form values are recorded here.'),
+                                        actions: [
+                                          TextButton(
+                                              onPressed: () =>
+                                                  Navigator.pop(context),
+                                              child: const Text('Close'))
+                                        ],
+                                      ));
+                            },
+                            label: const Text('Check autofill status')),
+                      ],
+                    ),
                   _buildPanel(
                     title: 'Password Output',
                     children: [
@@ -325,7 +384,11 @@ class _KeyTitanSettingsState extends State<KeyTitanSettings> {
                           );
                         },
                       ),
-                      if (_settings.outputMode == PasswordOutputMode.autofill &&
+                      if (Platform.isAndroid)
+                        const Text(
+                            'Android system autofill is controlled separately above.'),
+                      if (!Platform.isAndroid &&
+                          _settings.outputMode == PasswordOutputMode.autofill &&
                           _supportsAutofillMode) ...[
                         const SizedBox(height: 12),
                         DropdownButtonFormField<int>(
@@ -410,8 +473,8 @@ class _KeyTitanSettingsState extends State<KeyTitanSettings> {
                               (seconds) => DropdownMenuItem(
                                 value: seconds,
                                 child: Text(
-                                  KeyTitanSettingsData
-                                      .autoLockDelayLabel(seconds),
+                                  KeyTitanSettingsData.autoLockDelayLabel(
+                                      seconds),
                                 ),
                               ),
                             )
@@ -425,6 +488,31 @@ class _KeyTitanSettingsState extends State<KeyTitanSettings> {
                           );
                         },
                       ),
+                      if (Platform.isAndroid) ...[
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Android autofill unlocks a separate vault session with your master password. '
+                          'Leaving the screen locks the vault. A username-only fill allows one password-step continuation for the same login within 60 seconds; locking the device cancels it.',
+                        ),
+                        TextButton.icon(
+                          style: _settingsLinkStyle,
+                          onPressed: () async {
+                            await KeyTitanAutofillBridge.clearTrust();
+                            if (!context.mounted) return;
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Pending autofill requests cancelled. Edit a login’s URI overrides to remove its saved associations.',
+                                ),
+                              ),
+                            );
+                          },
+                          icon: const Icon(Icons.phonelink_erase),
+                          label: const Text(
+                            'Cancel pending autofill requests',
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                   const SizedBox(height: 16),
@@ -506,7 +594,7 @@ class _KeyTitanSettingsState extends State<KeyTitanSettings> {
       children: [
         Text(mode.label),
         const Text(
-          'Desktop - coming soon',
+          'Coming soon',
           style: TextStyle(fontSize: 10),
         ),
       ],

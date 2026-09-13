@@ -20,7 +20,12 @@ object KeyTitanAutofillBridge {
         }
     }
 
-    fun resolvePassword(entryId: String, callback: (String?) -> Unit) {
+    fun resolvePassword(
+        entryId: String,
+        vaultId: String,
+        sessionEpoch: String,
+        callback: (String?) -> Unit,
+    ) {
         val boundChannel = channel
         if (boundChannel == null) {
             callback(null)
@@ -30,7 +35,11 @@ object KeyTitanAutofillBridge {
         mainHandler.post {
             boundChannel.invokeMethod(
                 "resolvePassword",
-                mapOf("id" to entryId),
+                mapOf(
+                    "id" to entryId,
+                    "vaultId" to vaultId,
+                    "sessionEpoch" to sessionEpoch,
+                ),
                 object : MethodChannel.Result {
                     override fun success(result: Any?) {
                         callback(result as? String)

@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:keytitan/native_core.dart';
 
+// This development check covers the legacy KTN3/c20p1 ABI and URI derivation.
+// It is not a KTN4 compatibility test; see VAULT_FORMAT.md.
 void main() {
   final core = KeyTitanNativeCore.instance;
   if (core == null) {
@@ -49,7 +51,7 @@ void main() {
   decryptedVault.fillRange(0, decryptedVault.length, 0);
   sqliteBytes.fillRange(0, sqliteBytes.length, 0);
 
-  stdout.writeln('keytitan_core FFI check passed');
+  stdout.writeln('keytitan_core legacy FFI check passed');
 }
 
 class ListEquality {

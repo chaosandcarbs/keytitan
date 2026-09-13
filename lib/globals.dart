@@ -1,4 +1,3 @@
-import 'dart:ffi' hide Size;
 import 'package:flutter/material.dart';
 import 'dart:io';
 import 'package:path/path.dart' as p;
@@ -16,8 +15,7 @@ class KeyTitan {
 }
 
 bool hasIllegalFileCharacters(String test) {
-  if (RegExp(r'''[<>:"'/\\|?*\x00-\x1F]''').hasMatch(test)) return false;
-  return true;
+  return RegExp(r'''[<>:"'/\\|?*\x00-\x1F]''').hasMatch(test);
 }
 
 // Metadata for the home-screen menu cards. Adding a new card only requires
@@ -210,6 +208,29 @@ class KeyTitanVaultFiles {
 
     final baseName = p.basename(trimmed);
     return baseName == trimmed ? baseName : null;
+  }
+
+  // Returns the path of an existing vault with the same filename, treating
+  // case-only differences as conflicts for consistent behavior across file
+  // systems. Links and directories also count as conflicts so creation can
+  // never replace an existing directory entry.
+  static Future<String?> findExistingVault(
+    String directoryPath,
+    String fileName,
+  ) async {
+    final directory = Directory(directoryPath);
+    if (!await directory.exists()) {
+      throw FileSystemException(
+          'The selected directory does not exist', directoryPath);
+    }
+
+    final expectedName = p.basename(fileName).toLowerCase();
+    await for (final entity in directory.list(followLinks: false)) {
+      if (p.basename(entity.path).toLowerCase() == expectedName) {
+        return entity.path;
+      }
+    }
+    return null;
   }
 }
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -110,6 +111,12 @@ class _KeyTitanListState extends State<KeyTitanList>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden) {
+      unawaited(_savePendingChanges('background'));
+    }
+
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
       _scheduleBackgroundLock();
@@ -123,12 +130,24 @@ class _KeyTitanListState extends State<KeyTitanList>
 
   @override
   void onWindowBlur() {
+    unawaited(_savePendingChanges('window blur'));
     _scheduleBackgroundLock();
   }
 
   @override
   void onWindowMinimize() {
+    unawaited(_savePendingChanges('window minimize'));
     _scheduleBackgroundLock();
+  }
+
+  Future<bool> _savePendingChanges(String reason) async {
+    final file = pFile;
+    if (file == null || _pFileDisposed) return true;
+    // Always enqueue the save. A mutation may already be ahead of us in the
+    // vault's operation queue even when its dirty flag is not visible yet.
+    final saved = await file.attemptEncrypt();
+    if (!saved) debugPrint('Vault save failed during $reason.');
+    return saved;
   }
 
   @override
@@ -195,7 +214,13 @@ class _KeyTitanListState extends State<KeyTitanList>
       debugPrint('Auto-lock save error: $e');
     }
     if (!saved) {
-      debugPrint('Auto-lock closing without saving because save failed.');
+      debugPrint('Auto-lock cancelled because the vault could not be saved.');
+      _isClosing = false;
+      if (mounted) {
+        setState(() => _isAutoLocking = false);
+        unawaited(_syncAutofillCache());
+      }
+      return;
     }
 
     try {
@@ -231,17 +256,33 @@ class _KeyTitanListState extends State<KeyTitanList>
   }
 
   // Called when the user clicks the native window close button on desktop.
-  // Zeroes the master password and closes the in-memory DB without saving.
+  // The close is prevented until the current vault is durably saved.
   @override
   void onWindowClose() async {
     if (_isClosing) {
-      await windowManager.destroy();
       return;
     }
     _isClosing = true;
     _cancelBackgroundLock();
     _clearAllControllers();
     KeyTitanAutofillBridge.setPasswordResolver(null);
+    final saved = await pFile?.attemptEncrypt() ?? true;
+    if (!saved) {
+      _isClosing = false;
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+                'Window close cancelled because the vault could not be saved.'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+        unawaited(_syncAutofillCache());
+      }
+      await windowManager.show();
+      await windowManager.focus();
+      return;
+    }
     try {
       await pFile?.dispose();
       _pFileDisposed = true;
@@ -273,8 +314,20 @@ class _KeyTitanListState extends State<KeyTitanList>
   Future<void> _syncAutofillCache() async {
     if (!Constants.isMobile) return;
 
+    if (Platform.isAndroid) {
+      final file = pFile;
+      if (file != null) {
+        await KeyTitanAutofillBridge.rememberVault(file.fileName);
+      }
+      return; // Android unlocks a private, bounded session on demand.
+    }
+
     final file = pFile;
-    if (file == null || _settings.outputMode != PasswordOutputMode.autofill) {
+    final vaultId = file?.autofillVaultId;
+    if (!KeyTitanAutofillBridge.isAvailable ||
+        file == null ||
+        vaultId == null ||
+        _settings.outputMode != PasswordOutputMode.autofill) {
       KeyTitanAutofillBridge.setPasswordResolver(null);
       await KeyTitanAutofillBridge.clearEntries();
       return;
@@ -300,12 +353,21 @@ class _KeyTitanListState extends State<KeyTitanList>
     await KeyTitanAutofillBridge.updateEntries(
       entries: entries,
       attemptWindowSeconds: _settings.autofillAttemptWindowSeconds,
+      vaultId: vaultId,
+      sessionEpoch: file.autofillSessionEpoch,
     );
   }
 
-  Future<String?> _resolveAutofillPassword(String entryId) async {
+  Future<String?> _resolveAutofillPassword(
+    String entryId,
+    String vaultId,
+    String sessionEpoch,
+  ) async {
     final file = pFile;
-    if (file == null || _settings.outputMode != PasswordOutputMode.autofill) {
+    if (file == null ||
+        file.autofillVaultId != vaultId ||
+        file.autofillSessionEpoch != sessionEpoch ||
+        _settings.outputMode != PasswordOutputMode.autofill) {
       return null;
     }
 
@@ -316,8 +378,7 @@ class _KeyTitanListState extends State<KeyTitanList>
     final ciphertext = row?['password']?.toString();
     if (ciphertext == null || ciphertext.isEmpty) return null;
 
-    final plaintext =
-        await keyTitanPass.hdecrypt(file.passwordBytes, ciphertext);
+    final plaintext = await file.decryptPassword(ciphertext);
     if (plaintext == keyTitanPass.decryptionError) return null;
     return plaintext;
   }
@@ -343,19 +404,23 @@ class _KeyTitanListState extends State<KeyTitanList>
 
   Future<void> _createPassword() async {
     await pFile!.savePassword(_passwordFromControllers(id: -1));
+    final saved = await _savePendingChanges('credential creation');
     // Zero the password field immediately after the encrypted copy is written.
     passCon.text = '';
     _triggerRefresh();
     if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    if (!saved) _showAutosaveFailure();
   }
 
   Future<void> _updatePassword() async {
     await pFile!
         .savePassword(_passwordFromControllers(id: int.parse(idCon.text)));
+    final saved = await _savePendingChanges('credential update');
     // Zero the password field immediately after the encrypted copy is written.
     passCon.text = '';
     _triggerRefresh();
     if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    if (!saved) _showAutosaveFailure();
   }
 
   keyTitanPass _passwordFromControllers({required int id}) {
@@ -372,8 +437,24 @@ class _KeyTitanListState extends State<KeyTitanList>
 
   Future<void> _deletePassword(int id) async {
     await pFile!.deletePassword(id);
+    final saved = await _savePendingChanges('credential deletion');
     _triggerRefresh();
     if (mounted) Navigator.of(context, rootNavigator: true).pop();
+    if (!saved) _showAutosaveFailure();
+  }
+
+  void _showAutosaveFailure() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'The change is still open in memory but could not be saved. '
+          'Use Save & Close to retry before leaving the vault.',
+        ),
+        backgroundColor: Colors.redAccent,
+        duration: Duration(seconds: 8),
+      ),
+    );
   }
 
   Future<void> saveAndClose() async {
@@ -558,6 +639,7 @@ class _KeyTitanListState extends State<KeyTitanList>
                             currentPassword: currentCon.text,
                             newPassword: newCon.text,
                           );
+                          _triggerRefresh();
 
                           if (!mounted) return;
                           if (changed) {
@@ -701,7 +783,7 @@ class _KeyTitanListState extends State<KeyTitanList>
                               maxLines: 3,
                               decoration: const InputDecoration(
                                 hintText:
-                                    'Optional: extra autofill URIs, androidapp://...',
+                                    'Extra exact origins or androidapp://package?sha256_cert=...',
                                 label: Text('Autofill URIs'),
                               ),
                             ),
@@ -972,8 +1054,7 @@ class _KeyTitanListState extends State<KeyTitanList>
                           final messenger = ScaffoldMessenger.of(context);
                           // Decrypt the password only at the moment the edit
                           // button is pressed, then populate the dialog.
-                          final decryptedPass = await keyTitanPass.hdecrypt(
-                            pFile!.passwordBytes,
+                          final decryptedPass = await pFile!.decryptPassword(
                             data['password'] as String,
                           );
                           if (!mounted) return;
@@ -1213,8 +1294,7 @@ class _CategoryListView extends StatelessWidget {
           final messenger = ScaffoldMessenger.of(context);
           // Decrypt only at the moment the copy button is pressed.
           // The plaintext exists only for the duration of this callback.
-          final plaintext = await keyTitanPass.hdecrypt(
-            pFile.passwordBytes,
+          final plaintext = await pFile.decryptPassword(
             item['password'] as String,
           );
           if (plaintext == keyTitanPass.decryptionError) {

@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart' as dart_crypto;
+import 'package:flutter/services.dart';
 import 'package:flutter/material.dart';
 import 'package:keytitan/env.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -12,6 +14,7 @@ import 'package:path/path.dart' as p;
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'globals.dart';
+import 'vault_format.dart';
 
 // ---------------------------------------------------------------------------
 // SecureStorage - persists desktop OAuth credentials across sessions.
@@ -58,6 +61,183 @@ class SecureStorage {
   Future<void> clearCredentials() async {
     await _storage.delete(key: _credentialsKey);
   }
+}
+
+class DriveFileConflict implements Exception {
+  DriveFileConflict(this.remoteFile);
+
+  final ga.File remoteFile;
+
+  @override
+  String toString() =>
+      'A Drive file named "${remoteFile.name ?? 'unknown'}" already exists.';
+}
+
+class LocalVaultConflict implements Exception {
+  LocalVaultConflict(this.localFile);
+
+  final File localFile;
+
+  @override
+  String toString() =>
+      'A local vault named "${p.basename(localFile.path)}" already exists.';
+}
+
+// Writes a downloaded vault beside its destination and validates the envelope
+// before replacing anything. Public so the file-safety behavior can be tested
+// without making a real Drive request.
+Future<File> writeVaultDownloadAtomically({
+  required Stream<List<int>> source,
+  required String destinationPath,
+  bool replaceExisting = false,
+}) async {
+  final destination = File(destinationPath);
+  if (await destination.exists() && !replaceExisting) {
+    throw LocalVaultConflict(destination);
+  }
+  final expected =
+      Platform.isAndroid && replaceExisting && await destination.exists()
+          ? dart_crypto.sha256
+              .convert(await destination.readAsBytes())
+              .toString()
+              .toUpperCase()
+          : null;
+
+  final tempFile = await _createDownloadTempFile(destination);
+  var sinkClosed = false;
+  final sink = tempFile.openWrite(mode: FileMode.writeOnly);
+
+  try {
+    await sink.addStream(source);
+    await sink.flush();
+    await sink.close();
+    sinkClosed = true;
+
+    if (!await _hasValidVaultEnvelope(tempFile)) {
+      throw const FormatException(
+        'The downloaded file is not a supported KeyTitan vault.',
+      );
+    }
+
+    if (Platform.isAndroid) {
+      // Downloads share the main/autofill commit queue and may not overwrite a
+      // login saved while the network transfer was in progress.
+      await const MethodChannel('app.keytitan/vault_commit').invokeMethod<void>(
+        'commit',
+        {
+          'path': destination.path,
+          'expected': expected,
+          'bytes': await tempFile.readAsBytes()
+        },
+      );
+      await tempFile.delete();
+      return destination;
+    }
+    return await _replaceDownloadedVault(
+      tempFile,
+      destination,
+      replaceExisting: replaceExisting,
+    );
+  } catch (_) {
+    if (!sinkClosed) {
+      try {
+        await sink.close();
+      } catch (_) {
+        // Preserve the original download or replacement error.
+      }
+    }
+    if (await tempFile.exists()) {
+      try {
+        await tempFile.delete();
+      } catch (_) {
+        // A failed cleanup must not hide the operation's original error.
+      }
+    }
+    rethrow;
+  }
+}
+
+Future<File> _createDownloadTempFile(File destination) async {
+  final parent = destination.parent;
+  if (!await parent.exists()) {
+    throw FileSystemException(
+      'The destination directory does not exist',
+      parent.path,
+    );
+  }
+
+  final nonce = '${DateTime.now().microsecondsSinceEpoch}-$pid';
+  for (var attempt = 0; attempt < 100; attempt++) {
+    final candidate = File('${destination.path}.download-$nonce-$attempt.tmp');
+    try {
+      return await candidate.create(exclusive: true);
+    } on FileSystemException {
+      // Try another unique sibling name.
+    }
+  }
+  throw FileSystemException(
+    'Could not reserve a temporary download file',
+    parent.path,
+  );
+}
+
+Future<bool> _hasValidVaultEnvelope(File file) async {
+  final length = await file.length();
+  final handle = await file.open();
+  try {
+    final header = await handle.read(KeyTitanVaultCodec.v4HeaderLength);
+    return KeyTitanVaultCodec.hasSupportedEnvelopeHeader(header, length);
+  } finally {
+    await handle.close();
+  }
+}
+
+Future<File> _replaceDownloadedVault(
+  File tempFile,
+  File destination, {
+  required bool replaceExisting,
+}) async {
+  if (!await destination.exists()) {
+    return tempFile.rename(destination.path);
+  }
+  if (!replaceExisting) throw LocalVaultConflict(destination);
+
+  // POSIX rename replaces the destination atomically. Windows can reject a
+  // rename over an existing file, so retain a backup while using a fallback.
+  try {
+    return await tempFile.rename(destination.path);
+  } on FileSystemException {
+    if (!await destination.exists()) rethrow;
+  }
+
+  final backupPath = await _unusedBackupPath(destination);
+  final backup = await destination.rename(backupPath);
+  try {
+    final result = await tempFile.rename(destination.path);
+    try {
+      await backup.delete();
+    } catch (e) {
+      debugPrint('Could not remove completed download backup: $e');
+    }
+    return result;
+  } catch (_) {
+    if (!await destination.exists() && await backup.exists()) {
+      await backup.rename(destination.path);
+    }
+    rethrow;
+  }
+}
+
+Future<String> _unusedBackupPath(File destination) async {
+  final nonce = '${DateTime.now().microsecondsSinceEpoch}-$pid';
+  for (var attempt = 0; attempt < 100; attempt++) {
+    final candidate = '${destination.path}.download-$nonce-$attempt.bak';
+    if (!await File(candidate).exists()) return candidate;
+  }
+  throw FileSystemException(
+    'Could not reserve a download backup path',
+    destination.parent.path,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -287,12 +467,10 @@ class GoogleDrive {
 
   // Returns .ktn files in the KeyTitanBackup Drive folder.
   Future<List<ga.File>> listDriveFiles() async {
-    final client = await getHttpClient();
-    if (client == null) return [];
+    final client = await _requireHttpClient();
 
     final api = ga.DriveApi(client);
     final folderId = await _getOrCreateFolderId(api);
-    if (folderId == null) return [];
 
     final query = "'$folderId' in parents and trashed = false "
         "and name contains '${KeyTitanVaultFiles.extension}'";
@@ -310,44 +488,111 @@ class GoogleDrive {
         .toList();
   }
 
-  // Uploads a local file to the KeyTitanBackup folder. If a file with the
-  // same name already exists in Drive it is overwritten; otherwise a new
-  // entry is created.
-  Future<void> uploadFileToDrive(File localFile) async {
-    final client = await getHttpClient();
-    if (client == null) return;
+  // Uploads a local vault. Replacing a same-name Drive file must be explicitly
+  // authorized by the caller after presenting the conflict to the user.
+  Future<ga.File> uploadFileToDrive(
+    File localFile, {
+    ga.File? replaceExisting,
+  }) async {
+    if (!await localFile.exists()) {
+      throw FileSystemException(
+          'The local vault does not exist', localFile.path);
+    }
+
+    final fileName = p.basename(localFile.path);
+    if (KeyTitanVaultFiles.safeFileName(fileName) == null) {
+      throw ArgumentError.value(fileName, 'localFile', 'Unsafe vault filename');
+    }
+
+    final client = await _requireHttpClient();
 
     final api = ga.DriveApi(client);
     final folderId = await _getOrCreateFolderId(api);
-    if (folderId == null) return;
 
-    final fileName = p.basename(localFile.path);
+    final queryName = _escapeDriveQueryLiteral(fileName);
     final existing = await api.files.list(
-      q: "name = '$fileName' and '$folderId' in parents and trashed = false",
-      $fields: 'files(id)',
+      q: "name = '$queryName' and '$folderId' in parents and trashed = false",
+      $fields: 'files(id, name, size, modifiedTime, md5Checksum)',
     );
+
+    final existingFiles = existing.files ?? const <ga.File>[];
+    ga.File? fileToReplace;
+    if (existingFiles.isNotEmpty) {
+      if (replaceExisting == null) {
+        throw DriveFileConflict(existingFiles.first);
+      }
+
+      for (final existingFile in existingFiles) {
+        if (existingFile.id == replaceExisting.id) {
+          fileToReplace = existingFile;
+          break;
+        }
+      }
+      if (fileToReplace == null) {
+        throw DriveFileConflict(existingFiles.first);
+      }
+
+      final expectedModified = replaceExisting.modifiedTime;
+      final currentModified = fileToReplace.modifiedTime;
+      if (expectedModified != null &&
+          currentModified != null &&
+          !currentModified.isAtSameMomentAs(expectedModified)) {
+        throw DriveFileConflict(fileToReplace);
+      }
+    }
 
     final media = ga.Media(localFile.openRead(), localFile.lengthSync());
     final driveFile = ga.File()..name = fileName;
+    late final ga.File uploaded;
 
-    if (existing.files != null && existing.files!.isNotEmpty) {
-      await api.files
-          .update(driveFile, existing.files!.first.id!, uploadMedia: media);
+    if (fileToReplace != null) {
+      uploaded = await api.files.update(
+        driveFile,
+        fileToReplace.id!,
+        uploadMedia: media,
+        $fields: 'id, name, size, modifiedTime, md5Checksum',
+      );
     } else {
       driveFile.parents = [folderId];
-      await api.files.create(driveFile, uploadMedia: media);
+      uploaded = await api.files.create(
+        driveFile,
+        uploadMedia: media,
+        $fields: 'id, name, size, modifiedTime, md5Checksum',
+      );
     }
+
+    if (uploaded.id == null) {
+      throw StateError('Drive did not confirm the uploaded file.');
+    }
+    return uploaded;
   }
 
-  // Downloads a Drive file to a local directory, replacing any existing local
-  // copy with the same name.
-  Future<File?> downloadFileFromDrive(
-      String fileId, String fileName, String localDirPath) async {
-    final client = await getHttpClient();
-    if (client == null) return null;
+  // Downloads a Drive vault to a validated temporary file. Replacing an
+  // existing local vault must be explicitly authorized by the caller.
+  Future<File> downloadFileFromDrive(
+    String fileId,
+    String fileName,
+    String localDirPath, {
+    bool replaceExisting = false,
+  }) async {
+    final client = await _requireHttpClient();
 
     final safeFileName = _safeDriveFileName(fileName);
-    if (safeFileName == null) return null;
+    if (safeFileName == null) {
+      throw ArgumentError.value(fileName, 'fileName', 'Unsafe vault filename');
+    }
+
+    final localRoot = p.normalize(p.absolute(localDirPath));
+    final savePath = p.normalize(p.absolute(p.join(localRoot, safeFileName)));
+    if (!p.isWithin(localRoot, savePath)) {
+      throw ArgumentError.value(
+          savePath, 'fileName', 'Unsafe destination path');
+    }
+
+    final localFile = File(savePath);
+    if (await localFile.exists() && !replaceExisting) {
+      throw LocalVaultConflict(localFile);
+    }
 
     final api = ga.DriveApi(client);
     final media = await api.files.get(
@@ -355,30 +600,11 @@ class GoogleDrive {
       downloadOptions: ga.DownloadOptions.fullMedia,
     ) as ga.Media;
 
-    final localRoot = p.normalize(p.absolute(localDirPath));
-    final savePath = p.normalize(p.absolute(p.join(localRoot, safeFileName)));
-    if (!p.isWithin(localRoot, savePath)) return null;
-
-    final localFile = File(savePath);
-
-    if (await localFile.exists()) {
-      try {
-        await localFile.delete();
-      } catch (e) {
-        debugPrint('Could not remove existing local file: $e');
-      }
-    }
-
-    final sink = localFile.openWrite();
-    try {
-      await sink.addStream(media.stream);
-    } catch (e) {
-      debugPrint('Download stream error: $e');
-      return null;
-    } finally {
-      await sink.close();
-    }
-    return localFile;
+    return writeVaultDownloadAtomically(
+      source: media.stream,
+      destinationPath: savePath,
+      replaceExisting: replaceExisting,
+    );
   }
 
   String? _safeDriveFileName(String fileName) {
@@ -386,25 +612,36 @@ class GoogleDrive {
   }
 
   // Finds the KeyTitanBackup folder in Drive, creating it if it doesn't exist.
-  Future<String?> _getOrCreateFolderId(ga.DriveApi api) async {
+  Future<String> _getOrCreateFolderId(ga.DriveApi api) async {
     const name = 'KeyTitanBackup';
     const mimeType = 'application/vnd.google-apps.folder';
-    try {
-      final found = await api.files.list(
-        q: "name = '$name' and mimeType = '$mimeType' and trashed = false",
-        $fields: 'files(id)',
-      );
-      if (found.files != null && found.files!.isNotEmpty) {
-        return found.files!.first.id;
-      }
-      final folder = ga.File()
-        ..name = name
-        ..mimeType = mimeType;
-      final created = await api.files.create(folder);
-      return created.id;
-    } catch (e) {
-      debugPrint('Drive folder error: $e');
-      return null;
+    final found = await api.files.list(
+      q: "name = '$name' and mimeType = '$mimeType' and trashed = false",
+      $fields: 'files(id)',
+    );
+    if (found.files != null && found.files!.isNotEmpty) {
+      final id = found.files!.first.id;
+      if (id != null) return id;
     }
+    final folder = ga.File()
+      ..name = name
+      ..mimeType = mimeType;
+    final created = await api.files.create(folder, $fields: 'id');
+    if (created.id == null) {
+      throw StateError('Drive did not confirm the backup folder.');
+    }
+    return created.id!;
+  }
+
+  Future<http.Client> _requireHttpClient() async {
+    final client = await getHttpClient();
+    if (client != null) return client;
+    throw StateError(
+      _lastAuthError ?? 'Google Drive authentication was not completed.',
+    );
+  }
+
+  String _escapeDriveQueryLiteral(String value) {
+    return value.replaceAll('\\', '\\\\').replaceAll("'", "\\'");
   }
 }

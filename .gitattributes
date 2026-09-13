@@ -1,0 +1,33 @@
+# Keep source and configuration diffs stable across Linux, macOS, and Windows.
+* text=auto eol=lf
+
+# Windows command scripts conventionally require CRLF checkouts.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never run newline conversion over binary artifacts or vaults.
+*.a binary
+*.apk binary
+*.appx binary
+*.cer binary
+*.der binary
+*.dll binary
+*.dylib binary
+*.exe binary
+*.gif binary
+*.ico binary
+*.jar binary
+*.jpeg binary
+*.jpg binary
+*.kdbx binary
+*.keystore binary
+*.ktn binary
+*.lib binary
+*.mobileprovision binary
+*.msix binary
+*.p12 binary
+*.pfx binary
+*.png binary
+*.so binary
+*.webp binary
+*.zip binary

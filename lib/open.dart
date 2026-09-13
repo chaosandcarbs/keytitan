@@ -153,12 +153,12 @@ class _KeyTitanOpenState extends State<KeyTitanOpen> {
 
   /// Uses the system file picker (desktop). Returns the selected path or null.
   Future<String?> _pickWithSystemPicker(String initialDir) async {
-    final result = await FilePicker.pickFiles(
+    final selected = await FilePicker.pickFile(
       type: FileType.custom,
       allowedExtensions: [KeyTitanVaultFiles.pickerExtension],
       initialDirectory: initialDir,
     );
-    return result?.files.single.path;
+    return selected?.path;
   }
 
   Future<String?> _showPasswordDialog() {

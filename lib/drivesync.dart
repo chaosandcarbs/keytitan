@@ -97,18 +97,23 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
   }
 
   Future<void> _refreshDriveFiles() async {
+    if (!mounted) return;
     setState(() => _isLoadingDrive = true);
     try {
       final files = await _googleDrive.listDriveFiles();
+      if (!mounted) return;
       setState(() {
         _driveFiles = files;
         _isLoadingDrive = false;
       });
     } catch (e) {
+      if (!mounted) return;
       setState(() => _isLoadingDrive = false);
       final msg = e.toString().toLowerCase();
       if (msg.contains('401') || msg.contains('unauthorized')) {
         _showSessionExpiredDialog();
+      } else {
+        _showSnackBar('Could not load Drive backups: $e');
       }
     }
   }
@@ -215,18 +220,90 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
   }
 
   Future<void> _handleUpload() async {
+    if (_isUploading) return;
     setState(() => _isUploading = true);
+    var uploaded = 0;
+    var skipped = 0;
     try {
       for (final file in _localFiles) {
-        await _googleDrive.uploadFileToDrive(file);
+        try {
+          await _googleDrive.uploadFileToDrive(file);
+        } on DriveFileConflict catch (conflict) {
+          final replace = await _confirmRemoteOverwrite(file, conflict);
+          if (!replace) {
+            skipped++;
+            continue;
+          }
+          await _googleDrive.uploadFileToDrive(
+            file,
+            replaceExisting: conflict.remoteFile,
+          );
+        }
+        uploaded++;
       }
-      _showSnackBar('Backup complete.');
-      _refreshDriveFiles();
+
+      if (skipped == 0) {
+        _showSnackBar('Backup complete: $uploaded file(s) uploaded.');
+      } else {
+        _showSnackBar(
+          'Backup finished: $uploaded uploaded, $skipped left unchanged.',
+        );
+      }
+      await _refreshDriveFiles();
     } catch (e) {
-      _showSnackBar('Upload failed: $e');
+      _showSnackBar('Upload stopped after $uploaded file(s): $e');
     } finally {
-      setState(() => _isUploading = false);
+      if (mounted) setState(() => _isUploading = false);
     }
+  }
+
+  Future<bool> _confirmRemoteOverwrite(
+    File localFile,
+    DriveFileConflict conflict,
+  ) async {
+    if (!mounted) return false;
+    final remote = conflict.remoteFile;
+    final localModified = await localFile.lastModified();
+    if (!mounted) return false;
+
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            backgroundColor: Constants.dialogColor,
+            title: const Text(
+              'Replace Drive backup?',
+              style: TextStyle(color: Colors.redAccent),
+            ),
+            content: Text(
+              'Drive already contains "${remote.name}". Replacing it cannot '
+              'be undone from KeyTitan.\n\n'
+              'Local modified: ${_formatTimestamp(localModified)}\n'
+              'Drive modified: ${_formatTimestamp(remote.modifiedTime)}',
+              style: const TextStyle(color: Colors.white),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text(
+                  'Keep Drive copy',
+                  style: TextStyle(color: Colors.blue),
+                ),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                ),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text(
+                  'Replace',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   Future<void> _handleDownload(drive.File driveFile) async {
@@ -247,15 +324,92 @@ class _KeyTitanSyncState extends State<KeyTitanSync> {
     }
 
     _showSnackBar('Downloading ${driveFile.name}...');
-    final result = await _googleDrive.downloadFileFromDrive(
-      driveFile.id!,
-      driveFile.name!,
-      localDir,
-    );
-    if (result != null) {
-      _showSnackBar('Downloaded to local folder.');
+    try {
+      late final File result;
+      try {
+        result = await _googleDrive.downloadFileFromDrive(
+          driveFile.id!,
+          driveFile.name!,
+          localDir,
+        );
+      } on LocalVaultConflict catch (conflict) {
+        final replace = await _confirmLocalOverwrite(driveFile, conflict);
+        if (!replace) {
+          _showSnackBar('Download cancelled. The local vault was unchanged.');
+          return;
+        }
+        result = await _googleDrive.downloadFileFromDrive(
+          driveFile.id!,
+          driveFile.name!,
+          localDir,
+          replaceExisting: true,
+        );
+      }
+
+      _showSnackBar('Downloaded ${p.basename(result.path)}.');
       await _loadFilesFromDirectory(localDir); // refresh local file list
+    } catch (e) {
+      final msg = e.toString().toLowerCase();
+      if (msg.contains('401') || msg.contains('unauthorized')) {
+        _showSessionExpiredDialog();
+      } else {
+        _showSnackBar('Download failed: $e');
+      }
     }
+  }
+
+  Future<bool> _confirmLocalOverwrite(
+    drive.File driveFile,
+    LocalVaultConflict conflict,
+  ) async {
+    if (!mounted) return false;
+    final localModified = await conflict.localFile.lastModified();
+    if (!mounted) return false;
+
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => AlertDialog(
+            backgroundColor: Constants.dialogColor,
+            title: const Text(
+              'Replace local vault?',
+              style: TextStyle(color: Colors.redAccent),
+            ),
+            content: Text(
+              'A local vault named "${p.basename(conflict.localFile.path)}" '
+              'already exists. The Drive copy will be fully downloaded and '
+              'format-checked before replacement.\n\n'
+              'Local modified: ${_formatTimestamp(localModified)}\n'
+              'Drive modified: ${_formatTimestamp(driveFile.modifiedTime)}',
+              style: const TextStyle(color: Colors.white),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text(
+                  'Keep local vault',
+                  style: TextStyle(color: Colors.blue),
+                ),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.redAccent,
+                ),
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text(
+                  'Replace',
+                  style: TextStyle(color: Colors.white),
+                ),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  String _formatTimestamp(DateTime? value) {
+    if (value == null) return 'unknown';
+    return value.toLocal().toString().split('.').first;
   }
 
   void _showSnackBar(String message) {

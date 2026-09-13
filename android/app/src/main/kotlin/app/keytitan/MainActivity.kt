@@ -15,6 +15,11 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app.keytitan/vault_commit")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "commit") VaultCommit.run(this, call.arguments as Map<*, *>, result)
+                else result.notImplemented()
+            }
         val channel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             "app.keytitan/autofill"
@@ -26,14 +31,14 @@ class MainActivity : FlutterActivity() {
                 "configure" -> {
                     val args = call.arguments as? Map<*, *>
                     val enabled = args?.get("enabled") as? Boolean ?: false
+                    AutofillPreferences.configure(this, enabled)
                     KeyTitanAutofillCache.configure(
                         enabled = enabled,
                         attemptWindowSeconds =
                             (args?.get("attemptWindowSeconds") as? Number)?.toLong() ?: 30L,
                     )
-                    if (enabled) {
-                        requestAutofillServiceEnable()
-                    }
+                    // Opening settings must not unexpectedly launch a system dialog.
+                    // Selection is an explicit action via enableService.
                     result.success(null)
                 }
                 "updateEntries" -> {
@@ -56,7 +61,9 @@ class MainActivity : FlutterActivity() {
                                     ?.map { it.toString() }
                                     ?: emptyList(),
                             )
-                        }
+                        },
+                        vaultId = args?.get("vaultId")?.toString().orEmpty(),
+                        sessionEpoch = args?.get("sessionEpoch")?.toString().orEmpty(),
                     )
                     result.success(null)
                 }
@@ -64,6 +71,25 @@ class MainActivity : FlutterActivity() {
                     KeyTitanAutofillCache.clearEntries()
                     result.success(null)
                 }
+                "clearTrust" -> {
+                    AutofillTrustStore.clear(this)
+                    AutofillSessions.clear()
+                    result.success(null)
+                }
+                "rememberVault" -> {
+                    val path = call.argument<String>("path").orEmpty()
+                    try {
+                        AutofillPreferences.remember(this, VaultCommit.file(this, path).path)
+                        result.success(null)
+                    } catch (_: Exception) { result.error("path", "Invalid vault path", null) }
+                }
+                "status" -> result.success(mapOf(
+                    "enabled" to AutofillPreferences.enabled(this),
+                    "selected" to (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                        getSystemService(AutofillManager::class.java)?.hasEnabledAutofillServices() == true),
+                    "lastResult" to AutofillPreferences.diagnostic(this),
+                ))
+                "enableService" -> { requestAutofillServiceEnable(); result.success(null) }
                 else -> result.notImplemented()
             }
         }

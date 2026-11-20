@@ -10,7 +10,6 @@
 .history
 .svn/
 .swiftpm/
-.kilo/
 .dart_tool/
 migrate_working_dir/
 
@@ -18,24 +17,64 @@ migrate_working_dir/
 !packages/flutter_tools/pubspec.lock
 !packages/flutter_tools/test/widget_preview_scaffold.shard/widget_preview_scaffold/pubspec.lock
 
-# ignore env file
-.env
-
 # IntelliJ related
 *.iml
 *.ipr
 *.iws
 .idea/
 
-# The .vscode folder contains launch configuration and tasks you configure in
-# VS Code which you may wish to be included in version control, so this line
-# is commented out by default.
+# Local editor settings
 .classpath
 .project
 .settings/
-.vscode/*
-../.vscode/*
+.vscode/
 .ccls-cache
+
+# Local AI assistants, instructions, conversations, and MCP configuration
+.agents/
+.agent/
+.ai/
+.codex/
+.claude/
+.cursor/
+.continue/
+.cline/
+.clinerules
+.clinerules/
+.clineignore
+.roo/
+.roorules
+.roorules-*
+.rooignore
+.kilo/
+.kilocode/
+.kilocoderules
+.kilocoderules-*
+.kiloignore
+.gemini/
+.opencode/
+.copilot/
+.windsurf/
+.windsurfrules
+.aider*
+.cursorrules
+.cursorignore
+.cursorindexingignore
+AGENTS.md
+AGENTS.override.md
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+.mcp.json
+.mcp.*.json
+mcp.json
+opencode.json
+opencode.jsonc
+.github/copilot-instructions.md
+.github/instructions/
+.github/agents/
+.github/prompts/
+.github/skills/
 
 # Flutter/Dart/Pub related
 **/doc/api/
@@ -168,7 +207,6 @@ app.*.symbols
 .python-version
 .gclient_previous_custom_vars
 .gclient_previous_sync_commits
-kt.env
 
 # Rust native build artifacts
 native/**/target/
@@ -179,17 +217,64 @@ native/**/prebuilt/
 **/.kotlin/
 
 # Local secrets and environment overrides
+.env
 .env.*
+*.env
+*.env.*
 !.env.example
+!.env.sample
+!.env.template
+!*.env.example
+!*.env.sample
+!*.env.template
 kt.env
 kt.env.*
 !kt.env.example
 lib/env.g.dart
+.envrc
+.envrc.*
+!.envrc.example
+.direnv/
+secrets/
+.secrets/
+.credentials/
+secrets.json
+secrets.yaml
+secrets.yml
+secrets.toml
+
+# Local cloud, package-registry, and command-line authentication
+.aws/
+.azure/
+.gcloud/
+**/.config/gcloud/
+.ssh/
+.gnupg/
+.git-credentials
+.netrc
+_netrc
+.npmrc
+.pypirc
+**/.docker/config.json
+.vault-token
+.vault-password*
+id_rsa
+id_rsa.*
+id_ecdsa
+id_ecdsa.*
+id_ed25519
+id_ed25519.*
+*.ppk
 
 # Local KeyTitan vault files
 *.ktn
+*.ktn.lock
+*.ktn.*
 *.pass
+*.pass.*
 *.hydra
+*.hydra.*
+.keytitan-*/
 
 # Signing material and packaged release artifacts
 *.keystore
@@ -218,12 +303,21 @@ lib/env.g.dart
 **/credentials*.json
 **/service-account*.json
 **/service_account*.json
+**/application_default_credentials.json
+**/authorized_user*.json
+**/token.json
+**/tokens.json
 
 # Local databases, password-manager stores, and diagnostic dumps
 *.db
 *.db-journal
+*.db-*
+*.db3
+*.db3-*
 *.sqlite
+*.sqlite-*
 *.sqlite3
+*.sqlite3-*
 *.kdbx
 *.hprof
 *.dmp

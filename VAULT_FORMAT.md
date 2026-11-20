@@ -58,6 +58,19 @@ encryption operation with its wrapping nonce.
 5. Locking closes the in-memory database and zeroes the DEK buffer where Dart
    provides direct access to it.
 
+If auto-lock cannot save, the session is gated immediately. When possible, it
+serializes pending edits into an encrypted KTN4 snapshot retained only in process
+memory, then closes the database and clears active keys. Recovering this snapshot
+requires the session's master password. Its original disk fingerprint is retained:
+unlocking pending changes never authorizes overwriting a newer vault on disk.
+If snapshot encryption itself fails, the session remains gated for authenticated
+recovery rather than discarding pending edits. Process exit loses pending edits.
+
+Crypto operations destroy their temporary key objects and overwrite owned
+password/key/plaintext byte buffers after use. Argon2 overwrites its complete
+working buffer before releasing it on success or failure. Managed strings and runtime/OS
+copies are still subject to best-effort cleanup limitations.
+
 The revision is authenticated but is not, by itself, rollback protection. A
 device with no trusted external record cannot distinguish an authentic older
 copy of the whole vault from the newest copy.

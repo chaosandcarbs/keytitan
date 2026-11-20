@@ -73,7 +73,15 @@ is **not** implemented: this version requires the vault master password.
 
 Each vault-unlock activity owns a separate Flutter engine and in-memory vault.
 It does not borrow a global unlocked vault or retain the vault key for later fills.
-The engine is destroyed on exit; keys are disposed on completion/cancel.
+Successful fills close the private vault before returning the selected
+credential to native code. Cancellation immediately revokes tokens and asks Dart
+to clear controllers, drain pending work/unlocks, and dispose the vault. The
+private engine stays alive through host destruction until that acknowledgement;
+an unresponsive engine is forcibly destroyed after five seconds. Forced teardown
+cannot guarantee that application-level overwrite routines completed.
+Expiry, disabling autofill and request cancellation also notify an open private
+activity to start this cleanup. Native release and cancellation have a shared
+ordering point, and release rechecks the encrypted file's fingerprint.
 The remembered vault path and diagnostic reason code contain no login values.
 
 Android main-app saves, autofill saves and Drive downloads share a native commit

@@ -1,8 +1,10 @@
-import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart' as crypto;
+import 'package:cryptography/dart.dart' show DartArgon2id;
+import 'sensitive.dart';
+import 'secure_kdf.dart';
 
 enum KeyTitanVaultVersion { unknown, v3, v4 }
 
@@ -199,25 +201,24 @@ class KeyTitanVaultCodec {
   }) async {
     if (vaultKey.length != keyLength) {
       throw ArgumentError.value(
-          vaultKey.length, 'vaultKey', 'Must be 32 bytes');
+        vaultKey.length,
+        'vaultKey',
+        'Must be 32 bytes',
+      );
     }
     if (vaultId != null && vaultId.length != vaultIdLength) {
       throw ArgumentError.value(vaultId.length, 'vaultId', 'Must be 16 bytes');
     }
 
-    final actualVaultId =
-        Uint8List.fromList(vaultId ?? _secureRandomBytes(vaultIdLength));
+    final actualVaultId = Uint8List.fromList(
+      vaultId ?? _secureRandomBytes(vaultIdLength),
+    );
     final salt = _secureRandomBytes(saltLength);
     final wrapNonce = _secureRandomBytes(nonceLength);
     final aad = _buildWrapAad(actualVaultId, salt, wrapNonce);
     final kek = await _deriveArgon2idKey(passwordBytes, salt);
     try {
-      final wrappedKey = await _encrypt(
-        kek,
-        wrapNonce,
-        vaultKey,
-        aad: aad,
-      );
+      final wrappedKey = await _encrypt(kek, wrapNonce, vaultKey, aad: aad);
       if (wrappedKey.length != _wrappedKeyLength) {
         wrappedKey.fillRange(0, wrappedKey.length, 0);
         throw StateError('Unexpected wrapped vault-key length.');
@@ -275,7 +276,10 @@ class KeyTitanVaultCodec {
     }
     if (vaultKey.length != keyLength) {
       throw ArgumentError.value(
-          vaultKey.length, 'vaultKey', 'Must be 32 bytes');
+        vaultKey.length,
+        'vaultKey',
+        'Must be 32 bytes',
+      );
     }
     if (previousRevision < 0 || previousRevision >= maxRevision) {
       throw StateError('The vault revision cannot be incremented.');
@@ -292,8 +296,11 @@ class KeyTitanVaultCodec {
     );
     final output = Uint8List(header.length + encryptedPayload.length)
       ..setRange(0, header.length, header)
-      ..setRange(header.length, header.length + encryptedPayload.length,
-          encryptedPayload);
+      ..setRange(
+        header.length,
+        header.length + encryptedPayload.length,
+        encryptedPayload,
+      );
     return Ktn4EncodedVault(bytes: output, revision: revision);
   }
 
@@ -362,17 +369,15 @@ class KeyTitanVaultCodec {
     Uint8List passwordBytes,
     Uint8List salt,
   ) async {
-    final argon2 = crypto.Argon2id(
+    // The public byte-oriented state avoids a password -> String -> bytes
+    // roundtrip and the non-overwriting SecretKey returned by deriveKey().
+    final state = DartArgon2id(
       memory: argonMemoryKiB,
       parallelism: argonParallelism,
       iterations: argonIterations,
       hashLength: keyLength,
-    );
-    final secretKey = await argon2.deriveKeyFromPassword(
-      password: utf8.decode(passwordBytes, allowMalformed: true),
-      nonce: salt,
-    );
-    return Uint8List.fromList(await secretKey.extractBytes());
+    ).newState();
+    return deriveAndClearArgon2id(state, password: passwordBytes, salt: salt);
   }
 
   static Future<Uint8List> _encrypt(
@@ -382,13 +387,17 @@ class KeyTitanVaultCodec {
     List<int> aad = const <int>[],
   }) async {
     final secretKey = await _cipher.newSecretKeyFromBytes(keyBytes);
-    final secretBox = await _cipher.encrypt(
-      plaintext,
-      secretKey: secretKey,
-      nonce: nonce,
-      aad: aad,
-    );
-    return Uint8List.fromList(secretBox.cipherText + secretBox.mac.bytes);
+    try {
+      final secretBox = await _cipher.encrypt(
+        plaintext,
+        secretKey: secretKey,
+        nonce: nonce,
+        aad: aad,
+      );
+      return Uint8List.fromList(secretBox.cipherText + secretBox.mac.bytes);
+    } finally {
+      secretKey.destroy();
+    }
   }
 
   static Future<Uint8List?> _decrypt(
@@ -405,13 +414,20 @@ class KeyTitanVaultCodec {
       nonce: nonce,
       mac: crypto.Mac(encrypted.sublist(encrypted.length - aeadTagLength)),
     );
+    final secretKey = await _cipher.newSecretKeyFromBytes(keyBytes);
+    List<int>? plaintext;
     try {
-      final secretKey = await _cipher.newSecretKeyFromBytes(keyBytes);
-      return Uint8List.fromList(
-        await _cipher.decrypt(secretBox, secretKey: secretKey, aad: aad),
+      plaintext = await _cipher.decrypt(
+        secretBox,
+        secretKey: secretKey,
+        aad: aad,
       );
+      return Uint8List.fromList(plaintext);
     } on crypto.SecretBoxAuthenticationError {
       return null;
+    } finally {
+      wipeBytes(plaintext);
+      secretKey.destroy();
     }
   }
 

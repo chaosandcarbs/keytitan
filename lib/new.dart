@@ -269,6 +269,10 @@ class _KeyTitanNewState extends State<KeyTitanNew> {
     return TextFormField(
       controller: controller,
       obscureText: true,
+      autocorrect: false,
+      enableSuggestions: false,
+      enableIMEPersonalizedLearning: false,
+      autofillHints: null,
       style: TextStyle(color: Constants.lightText),
       decoration: InputDecoration(
         labelText: label,

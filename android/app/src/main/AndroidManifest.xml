@@ -8,6 +8,11 @@
         android:icon="@mipmap/ic_launcher"
         android:allowBackup="false"
         android:enableOnBackInvokedCallback="true"  >
+        <provider
+            android:name="app.keytitan.SensitiveClipboardProvider"
+            android:authorities="${applicationId}.sensitive_clipboard"
+            android:exported="false"
+            android:grantUriPermissions="true" />
         <activity
             android:name="app.keytitan.MainActivity"    
             android:exported="true"

@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.Settings
 import android.view.autofill.AutofillManager
 import io.flutter.embedding.engine.FlutterEngine
@@ -13,8 +14,26 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private var autofillChannel: MethodChannel? = null
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        SensitiveUi.protect(this)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app.keytitan/security")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "copySensitive") {
+                    val text = call.argument<String>("text")
+                    if (text == null) result.error("invalid", "No clipboard text", null)
+                    else {
+                        try {
+                            SensitiveUi.copy(this, text, call.argument<Number>("clearAfterMs")?.toLong())
+                            result.success(null)
+                        } catch (_: Exception) { result.error("clipboard", "Could not copy password", null) }
+                    }
+                } else result.notImplemented()
+            }
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app.keytitan/vault_commit")
             .setMethodCallHandler { call, result ->
                 if (call.method == "commit") VaultCommit.run(this, call.arguments as Map<*, *>, result)
@@ -99,6 +118,11 @@ class MainActivity : FlutterActivity() {
         autofillChannel?.let { KeyTitanAutofillBridge.unbind(it) }
         autofillChannel = null
         super.cleanUpFlutterEngine(flutterEngine)
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) SensitiveClipboardContent.expireIfNeeded()
     }
 
     private fun requestAutofillServiceEnable() {

@@ -15,6 +15,7 @@ import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'globals.dart';
 import 'vault_format.dart';
+import 'vault_storage.dart';
 
 // ---------------------------------------------------------------------------
 // SecureStorage - persists desktop OAuth credentials across sessions.
@@ -95,15 +96,15 @@ Future<File> writeVaultDownloadAtomically({
   if (await destination.exists() && !replaceExisting) {
     throw LocalVaultConflict(destination);
   }
-  final expected =
-      Platform.isAndroid && replaceExisting && await destination.exists()
-          ? dart_crypto.sha256
-              .convert(await destination.readAsBytes())
-              .toString()
-              .toUpperCase()
-          : null;
+  final expected = replaceExisting && await destination.exists()
+      ? dart_crypto.sha256
+            .convert(await destination.readAsBytes())
+            .toString()
+            .toUpperCase()
+      : null;
 
-  final tempFile = await _createDownloadTempFile(destination);
+  final staging = await VaultStagingFile.create(destination);
+  final tempFile = staging.file;
   var sinkClosed = false;
   final sink = tempFile.openWrite(mode: FileMode.writeOnly);
 
@@ -122,22 +123,22 @@ Future<File> writeVaultDownloadAtomically({
     if (Platform.isAndroid) {
       // Downloads share the main/autofill commit queue and may not overwrite a
       // login saved while the network transfer was in progress.
-      await const MethodChannel('app.keytitan/vault_commit').invokeMethod<void>(
-        'commit',
-        {
-          'path': destination.path,
-          'expected': expected,
-          'bytes': await tempFile.readAsBytes()
-        },
-      );
+      await const MethodChannel(
+        'app.keytitan/vault_commit',
+      ).invokeMethod<void>('commit', {
+        'path': destination.path,
+        'expected': expected,
+        'bytes': await tempFile.readAsBytes(),
+      });
       await tempFile.delete();
       return destination;
     }
-    return await _replaceDownloadedVault(
-      tempFile,
+    await VaultFileCommit.commit(
+      staging,
       destination,
-      replaceExisting: replaceExisting,
+      expectedFingerprint: expected,
     );
+    return destination;
   } catch (_) {
     if (!sinkClosed) {
       try {
@@ -154,31 +155,9 @@ Future<File> writeVaultDownloadAtomically({
       }
     }
     rethrow;
+  } finally {
+    await staging.dispose();
   }
-}
-
-Future<File> _createDownloadTempFile(File destination) async {
-  final parent = destination.parent;
-  if (!await parent.exists()) {
-    throw FileSystemException(
-      'The destination directory does not exist',
-      parent.path,
-    );
-  }
-
-  final nonce = '${DateTime.now().microsecondsSinceEpoch}-$pid';
-  for (var attempt = 0; attempt < 100; attempt++) {
-    final candidate = File('${destination.path}.download-$nonce-$attempt.tmp');
-    try {
-      return await candidate.create(exclusive: true);
-    } on FileSystemException {
-      // Try another unique sibling name.
-    }
-  }
-  throw FileSystemException(
-    'Could not reserve a temporary download file',
-    parent.path,
-  );
 }
 
 Future<bool> _hasValidVaultEnvelope(File file) async {
@@ -190,54 +169,6 @@ Future<bool> _hasValidVaultEnvelope(File file) async {
   } finally {
     await handle.close();
   }
-}
-
-Future<File> _replaceDownloadedVault(
-  File tempFile,
-  File destination, {
-  required bool replaceExisting,
-}) async {
-  if (!await destination.exists()) {
-    return tempFile.rename(destination.path);
-  }
-  if (!replaceExisting) throw LocalVaultConflict(destination);
-
-  // POSIX rename replaces the destination atomically. Windows can reject a
-  // rename over an existing file, so retain a backup while using a fallback.
-  try {
-    return await tempFile.rename(destination.path);
-  } on FileSystemException {
-    if (!await destination.exists()) rethrow;
-  }
-
-  final backupPath = await _unusedBackupPath(destination);
-  final backup = await destination.rename(backupPath);
-  try {
-    final result = await tempFile.rename(destination.path);
-    try {
-      await backup.delete();
-    } catch (e) {
-      debugPrint('Could not remove completed download backup: $e');
-    }
-    return result;
-  } catch (_) {
-    if (!await destination.exists() && await backup.exists()) {
-      await backup.rename(destination.path);
-    }
-    rethrow;
-  }
-}
-
-Future<String> _unusedBackupPath(File destination) async {
-  final nonce = '${DateTime.now().microsecondsSinceEpoch}-$pid';
-  for (var attempt = 0; attempt < 100; attempt++) {
-    final candidate = '${destination.path}.download-$nonce-$attempt.bak';
-    if (!await File(candidate).exists()) return candidate;
-  }
-  throw FileSystemException(
-    'Could not reserve a download backup path',
-    destination.parent.path,
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -253,6 +184,8 @@ Future<String> _unusedBackupPath(File destination) async {
 //   server), which works fine on Windows/Linux/macOS.
 // ---------------------------------------------------------------------------
 class GoogleDrive {
+  GoogleDrive({http.Client? client}) : _cachedClient = client;
+
   final storage = SecureStorage();
 
   static final List<String> _scopes = [
@@ -280,8 +213,9 @@ class GoogleDrive {
     if (_gsiInitialized) return;
     await GoogleSignIn.instance.initialize(
       clientId: Platform.isAndroid ? Env.androidClientId : null,
-      serverClientId:
-          Platform.isAndroid ? Env.webClientId : Env.desktopClientId,
+      serverClientId: Platform.isAndroid
+          ? Env.webClientId
+          : Env.desktopClientId,
     );
     _gsiInitialized = true;
   }
@@ -326,8 +260,8 @@ class GoogleDrive {
       // attemptLightweightAuthentication returns non-null when a cached
       // session exists and never shows any UI.
       try {
-        final account =
-            await GoogleSignIn.instance.attemptLightweightAuthentication();
+        final account = await GoogleSignIn.instance
+            .attemptLightweightAuthentication();
         return account != null;
       } on GoogleSignInException catch (e) {
         debugPrint('OAuth mobile lightweight auth check failed: $e');
@@ -356,7 +290,7 @@ class GoogleDrive {
 
       final authorization =
           await account.authorizationClient.authorizationForScopes(_scopes) ??
-              await account.authorizationClient.authorizeScopes(_scopes);
+          await account.authorizationClient.authorizeScopes(_scopes);
 
       // The extension bridge produces a googleapis_auth-compatible AuthClient.
       return authorization.authClient(scopes: _scopes);
@@ -472,20 +406,28 @@ class GoogleDrive {
     final api = ga.DriveApi(client);
     final folderId = await _getOrCreateFolderId(api);
 
-    final query = "'$folderId' in parents and trashed = false "
+    final query =
+        "'$folderId' in parents and trashed = false "
         "and name contains '${KeyTitanVaultFiles.extension}'";
 
-    final response = await api.files.list(
-      q: query,
-      $fields: 'files(id, name, size, modifiedTime)',
-    );
-    return (response.files ?? [])
-        .where(
+    final files = <ga.File>[];
+    String? pageToken;
+    do {
+      final response = await api.files.list(
+        q: query,
+        pageToken: pageToken,
+        $fields: 'nextPageToken, files(id, name, size, modifiedTime)',
+      );
+      files.addAll(
+        (response.files ?? const <ga.File>[]).where(
           (file) =>
               file.name != null &&
               KeyTitanVaultFiles.hasVaultExtension(file.name!),
-        )
-        .toList();
+        ),
+      );
+      pageToken = response.nextPageToken;
+    } while (pageToken != null && pageToken.isNotEmpty);
+    return files;
   }
 
   // Uploads a local vault. Replacing a same-name Drive file must be explicitly
@@ -496,7 +438,9 @@ class GoogleDrive {
   }) async {
     if (!await localFile.exists()) {
       throw FileSystemException(
-          'The local vault does not exist', localFile.path);
+        'The local vault does not exist',
+        localFile.path,
+      );
     }
 
     final fileName = p.basename(localFile.path);
@@ -586,7 +530,10 @@ class GoogleDrive {
     final savePath = p.normalize(p.absolute(p.join(localRoot, safeFileName)));
     if (!p.isWithin(localRoot, savePath)) {
       throw ArgumentError.value(
-          savePath, 'fileName', 'Unsafe destination path');
+        savePath,
+        'fileName',
+        'Unsafe destination path',
+      );
     }
 
     final localFile = File(savePath);
@@ -595,10 +542,12 @@ class GoogleDrive {
     }
 
     final api = ga.DriveApi(client);
-    final media = await api.files.get(
-      fileId,
-      downloadOptions: ga.DownloadOptions.fullMedia,
-    ) as ga.Media;
+    final media =
+        await api.files.get(
+              fileId,
+              downloadOptions: ga.DownloadOptions.fullMedia,
+            )
+            as ga.Media;
 
     return writeVaultDownloadAtomically(
       source: media.stream,

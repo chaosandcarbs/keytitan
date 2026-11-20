@@ -35,6 +35,13 @@ Apple's iOS/macOS essentially force you to trust the OS (part of their walled-ga
 
 You will need Flutter/Dart and, if you want Google Drive sync, your own Google Cloud OAuth client IDs configured through Envied in `kt.env`. An example is provided in git. 
 
+Android release builds require your production signing key. Copy
+`android/key.properties.example` to the ignored `android/key.properties` and
+configure its four values. Relative keystore paths resolve from `android/`.
+Release builds fail when signing is missing or a standard debug key is selected;
+debug builds continue to use the development key. Keep the production keystore
+and its passwords outside version control.
+
 ## Storage Locations
 
 Vault files are user-selected on desktop and stored in app-private application documents storage on Android.
@@ -56,6 +63,16 @@ An old [XKCD comic](https://xkcd.com/936/) comes to mind. Generally, length is b
 Many things in security are a tradeoff. KeyTitan supports clipboard output and security-gated Android autofill. Desktop browser/plugin autofill is not implemented. The iOS credential-provider scaffold does not return passwords.
 
 The pro of the clipboard is that it is simple and has little OS integration. The downside is that background apps on desktop, and foreground apps on Android 10+, can observe clipboard contents. KeyTitan can clear the clipboard after a timer, but clipboard history and other apps are ultimately controlled by the OS.
+
+With timed clearing enabled on Android, the clipboard holds an opaque reference
+to password text kept only in KeyTitan's memory. Standard Android text paste
+resolves that reference until the deadline. Expiry or screen lock wipes the
+owned password bytes; an expired reference returns empty text. This works when
+background clipboard reads are blocked and leaves other apps' later copies
+alone. A reference may remain visible after expiry. Apps that support only
+literal clipboard strings may not support timed paste; test your target apps
+and keyboards. Disabling timed clearing uses a normal plaintext clip. Any app
+that reads a password before expiry can retain its own copy.
 
 Android autofill initially returns one generic authenticated suggestion and no credential values. After selection, KeyTitan shows the exact package, signing-certificate digest, and web origin; requires explicit approval for an unverified destination; requires authentication; and only then shows the account choices inside KeyTitan. After one account is selected and confirmed, only that password is decrypted. Approvals bind to the package certificate and, for WebViews, the exact origin. Exact origins are matched conservatively: schemes, subdomains, and non-default ports are not treated as interchangeable. Native app associations can be made explicit with `androidapp://com.example.app?sha256_cert=<SHA-256>`.
 
@@ -82,7 +99,9 @@ Drive sync is optional. KeyTitan uploads/downloads encrypted `.ktn` files from a
 
 Passwords are stored in an encrypted `.ktn` vault file. In a nutshell, your password + parts of your vault file are used to derive/decrypt a 32-byte key (KEK) which is then used to derive/decrypt a separate random 32-byte key (DEK) which is what actually encrypts your data. The two keys mean KeyTitan doesn't have to keep your vault password in memory or stored anywhere on device after you enter it and the KEK is derived. Both keys, and the vault contents itself are wrapped in ChaCha20-Poly1305, which is a modern cryptographic algorithm that is quantum-resistant when using 32-byte (256-bit) keys. When you unlock a vault, KeyTitan decrypts the SQLite database into memory. Password fields remain in a second layer of encryption inside that in-memory database and are decrypted only when needed for copy, edit, or a selected and authenticated Android autofill request.
 
-Credential changes are encrypted and saved immediately. Pending changes are also retried when the app backgrounds, the window loses focus, the vault auto-locks, or you choose "Save & Close". A failed save leaves the vault open in memory and reports an error instead of silently locking or closing. "Close without saving" discards only changes that are still pending after a failed save; it cannot undo changes that were already auto-saved.
+Credential changes are encrypted and saved immediately. Pending changes are also retried when the app backgrounds, the window loses focus, the vault auto-locks, or you choose "Save & Close". If saving fails during auto-lock, the vault stays behind an authentication screen. Pending changes are sealed into an encrypted snapshot in process memory and the active database and keys are cleared; if sealing also fails, the authentication screen still blocks access to the retained session. Enter the vault password used for that session to recover the changes and retry. Pending changes are not a durable backup and are lost if the app process exits. An explicit failed "Save & Close" reports the error and keeps the session available. "Close without saving" discards only changes that are still pending after a failed save; it cannot undo changes that were already auto-saved.
+
+Desktop saves and local downloads reject stale replacements using the original file's SHA-256 and a shared OS lock. A hidden sibling such as `.Personal.ktn.lock` contains no vault data and stays in place so separate processes always use the same lock. Do not remove it while KeyTitan is running. New vaults and temporary files are private to the owner on POSIX; saves retain more restrictive owner permissions. Windows replacements preserve the existing vault's access controls. Android's main and autofill windows block screenshots and supported application overlays; copied passwords are marked sensitive for supported clipboard previews.
 
 ### For The Nerds Among Us
 

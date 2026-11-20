@@ -30,28 +30,23 @@ void main() {
 }
 
 // One-time setup for desktop targets (Windows, Linux, macOS).
-// Configures the window frame, prevents accidental close, and initialises
+// Configures the window frame and initialises
 // the sqflite FFI layer used for in-memory SQLite.
-void _initDesktop() async {
+void _initDesktop() {
   WidgetsFlutterBinding.ensureInitialized();
   sqfliteFfiInit();
   databaseFactory = databaseFactoryFfi;
 
-  await windowManager.ensureInitialized();
-
-  const windowOptions = WindowOptions(
-    size: Size(550, 950),
-    center: true,
-    title: 'KeyTitan Password Manager',
-    skipTaskbar: false,
-    titleBarStyle: TitleBarStyle.normal,
-  );
-
-  windowManager.waitUntilReadyToShow(windowOptions, () async {
-    await windowManager.show();
-    await windowManager.focus();
-    await windowManager.setPreventClose(true);
-  });
+  final window = WindowManager.instance.getCurrent();
+  if (window != null) {
+    window.titleBarStyle = TitleBarStyle.normal;
+    window.setSize(const Size(550, 950).toNative(), false);
+    window.center();
+    window.title = 'KeyTitan Password Manager';
+    window.isVisibleInTaskbar = true;
+    window.show();
+    window.focus();
+  }
 
   // Centre the window after the engine is fully ready.
   Future.delayed(const Duration(milliseconds: 500), () {
@@ -179,7 +174,7 @@ class _KeyTitanHomeState extends State<KeyTitanHome> {
             horizontal: 20,
           ),
           itemCount: cards.length,
-          separatorBuilder: (_, __) => Divider(
+          separatorBuilder: (_, _) => Divider(
             height: Constants.cardSepHeight,
             thickness: 0,
             color: Colors.transparent,

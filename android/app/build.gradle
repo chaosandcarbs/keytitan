@@ -4,6 +4,16 @@ plugins {
     id "dev.flutter.flutter-gradle-plugin"
 }
 
+def releaseSigningProperties = new Properties()
+def releaseSigningFile = rootProject.file('key.properties')
+if (releaseSigningFile.exists()) {
+    releaseSigningFile.withInputStream { releaseSigningProperties.load(it) }
+}
+def requiredSigningProperties = ['storeFile', 'storePassword', 'keyAlias', 'keyPassword']
+def signingConfigured = requiredSigningProperties.every {
+    releaseSigningProperties.getProperty(it)?.trim()
+}
+
 android {
     namespace = "app.keytitan"
     compileSdk = flutter.compileSdkVersion
@@ -25,15 +35,36 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        release {
+            if (signingConfigured) {
+                storeFile = rootProject.file(releaseSigningProperties.getProperty('storeFile'))
+                storePassword = releaseSigningProperties.getProperty('storePassword')
+                keyAlias = releaseSigningProperties.getProperty('keyAlias')
+                keyPassword = releaseSigningProperties.getProperty('keyPassword')
+            }
+        }
+    }
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.debug
+            signingConfig = signingConfigs.release
         }
     }
     testOptions {
         unitTests.includeAndroidResources = true
+    }
+}
+
+def validateReleaseSigningSetup = tasks.register('validateReleaseSigningSetup') {
+    doLast {
+        if (!signingConfigured) {
+            throw new GradleException('Release signing is required. Copy android/key.properties.example to android/key.properties and configure a production keystore.')
+        }
+        def configuredStore = rootProject.file(releaseSigningProperties.getProperty('storeFile'))
+        if (!configuredStore.isFile() || configuredStore.name.equalsIgnoreCase('debug.keystore') ||
+            releaseSigningProperties.getProperty('keyAlias').equalsIgnoreCase('androiddebugkey')) {
+            throw new GradleException('Release signing requires an existing production keystore and a non-debug key alias.')
+        }
     }
 }
 
@@ -51,6 +82,7 @@ dependencies {
 // Flutter copies assets after AGP's asset merge. AGP 9 host-test packaging also
 // consumes that directory and needs the explicit producer dependency.
 tasks.configureEach { task ->
+    if (task.name == 'preReleaseBuild') task.dependsOn(validateReleaseSigningSetup)
     if (task.name.startsWith("package") && task.name.endsWith("UnitTestForUnitTest")) {
         def variant = task.name.substring("package".length()).replaceFirst(/UnitTestForUnitTest$/, "")
         task.dependsOn(tasks.matching { it.name == "copyFlutterAssets${variant}" })

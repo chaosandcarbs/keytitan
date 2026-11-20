@@ -5,7 +5,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.view.WindowManager
 import android.view.autofill.AutofillManager
 import android.view.autofill.AutofillValue
 import android.widget.RemoteViews
@@ -21,15 +20,34 @@ class KeyTitanAutofillAuthActivity : FlutterActivity() {
     private var released = false
     private var eligible = emptySet<String>()
     private var contextDelivered = false
+    private var ownedEngine: FlutterEngine? = null
+    private var sessionChannel: MethodChannel? = null
+    private val cleanup = AutofillCleanup(
+        revoke = {
+            handler.removeCallbacks(expire)
+            session?.let { AutofillContinuation.remove(it.flow); AutofillSessions.remove(it.token) }
+            eligible = emptySet()
+            setResult(RESULT_CANCELED)
+        },
+        requestCleanup = { acknowledge ->
+            sessionChannel?.invokeMethod("cleanup", null, object : MethodChannel.Result {
+                override fun success(result: Any?) { acknowledge() }
+                override fun error(code: String, message: String?, details: Any?) {}
+                override fun notImplemented() {} // Dart signals ready after installing its handler.
+            })
+        },
+        finishHost = { finish() },
+        destroyEngine = { ownedEngine?.destroy(); ownedEngine = null; sessionChannel = null },
+    )
     override fun getDartEntrypointFunctionName() = "autofillMain"
-    override fun shouldDestroyEngineWithHost() = true
+    override fun shouldDestroyEngineWithHost() = false
     override fun onCreate(savedInstanceState: Bundle?) {
         session = AutofillSessions.claim(intent.getStringExtra("token").orEmpty())
         super.onCreate(savedInstanceState)
-        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) window.setHideOverlayWindows(true)
+        SensitiveUi.protect(this)
+        session?.let { current -> AutofillSessions.onRevoked(current.token) { if (!released) cancel() } }
         if (savedInstanceState != null || !valid()) { cancel(); return }
-        handler.postDelayed(expire, 180_000)
+        handler.postDelayed(expire, (session!!.expires - android.os.SystemClock.elapsedRealtime()).coerceAtLeast(0))
     }
     private fun valid(): Boolean {
         val current = session ?: return false
@@ -43,6 +61,7 @@ class KeyTitanAutofillAuthActivity : FlutterActivity() {
     }
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        ownedEngine = flutterEngine
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app.keytitan/vault_commit")
             .setMethodCallHandler { call, result ->
                 if (call.method != "commit" || !valid()) result.error("expired", "Request expired", null)
@@ -50,98 +69,119 @@ class KeyTitanAutofillAuthActivity : FlutterActivity() {
                     session?.let { AutofillSessions.valid(this, it) } == true
                 }
             }
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app.keytitan/autofill_session")
-            .setMethodCallHandler { call, result ->
-                if (call.method == "cancel") { result.success(null); cancel(); return@setMethodCallHandler }
-                if (!valid()) { result.error("expired", "Request expired. Tap the field again.", null); cancel(); return@setMethodCallHandler }
-                val current = session!!
-                val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
-                when (call.method) {
-                    "context" -> {
-                        if (contextDelivered) { result.error("replay", "Context already delivered", null); return@setMethodCallHandler }
-                        contextDelivered = true
-                        result.success(mapOf(
-                        "destination" to current.recipient.destinationLabel(),
-                        "binding" to AutofillSessions.binding(current.recipient),
-                        "vault" to AutofillPreferences.vault(this),
-                        "save" to current.save,
-                        "registration" to current.parsed.registration,
-                        "needsPassword" to (!current.save && !current.parsed.registration || current.parsed.passwordId != null),
-                        "username" to current.username,
-                        "password" to current.password,
-                        ))
-                        current.username = ""
-                        current.password = ""
+        sessionChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "app.keytitan/autofill_session")
+        sessionChannel!!.setMethodCallHandler { call, result ->
+            if (call.method == "cancel") { result.success(null); cancel(); return@setMethodCallHandler }
+            if (call.method == "ready") { result.success(null); cleanup.retry(); return@setMethodCallHandler }
+            if (!valid()) { result.error("expired", "Request expired. Tap the field again.", null); cancel(); return@setMethodCallHandler }
+            val current = session!!
+            val args = call.arguments as? Map<*, *> ?: emptyMap<Any, Any>()
+            when (call.method) {
+                "context" -> {
+                    if (contextDelivered) { result.error("replay", "Context already delivered", null); return@setMethodCallHandler }
+                    contextDelivered = true
+                    result.success(mapOf(
+                    "destination" to current.recipient.destinationLabel(),
+                    "binding" to AutofillSessions.binding(current.recipient),
+                    "vault" to AutofillPreferences.vault(this),
+                    "save" to current.save,
+                    "registration" to current.parsed.registration,
+                    "needsPassword" to (!current.save && !current.parsed.registration || current.parsed.passwordId != null),
+                    "username" to current.username,
+                    "password" to current.password,
+                    ))
+                    current.username = ""
+                    current.password = ""
+                }
+                "remember" -> {
+                    try {
+                        val path = VaultCommit.file(this, args["path"] as String).path
+                        AutofillPreferences.remember(this, path)
+                        result.success(null)
+                    } catch (_: Exception) { result.error("path", "Select a vault in KeyTitan app storage.", null) }
+                }
+                "matches" -> {
+                    val entries = (args["entries"] as? List<*>).orEmpty().mapNotNull { raw ->
+                        val e = raw as? Map<*, *> ?: return@mapNotNull null
+                        KeyTitanAutofillEntry(e["id"].toString(), "", e["site"].toString(), "",
+                            (e["uris"] as? List<*>)?.map { it.toString() }.orEmpty())
                     }
-                    "remember" -> {
-                        try {
-                            val path = VaultCommit.file(this, args["path"] as String).path
-                            AutofillPreferences.remember(this, path)
-                            result.success(null)
-                        } catch (_: Exception) { result.error("path", "Select a vault in KeyTitan app storage.", null) }
+                    eligible = AutofillEntryMatcher.matches(entries, current.recipient)
+                        .filter { current.recipient.kind != RecipientKind.NATIVE_APP || it.certificateBound }
+                        .map { it.entry.id }.toSet()
+                    result.success(eligible.toList())
+                }
+                "validate" -> result.success(true)
+                "finish" -> synchronized(AutofillSessions) {
+                    // Cancellation and vault commits share this final release boundary.
+                    if (!valid()) {
+                        result.error("expired", "Request expired", null)
+                        cancel()
+                        return@setMethodCallHandler
                     }
-                    "matches" -> {
-                        val entries = (args["entries"] as? List<*>).orEmpty().mapNotNull { raw ->
-                            val e = raw as? Map<*, *> ?: return@mapNotNull null
-                            KeyTitanAutofillEntry(e["id"].toString(), "", e["site"].toString(), "",
-                                (e["uris"] as? List<*>)?.map { it.toString() }.orEmpty())
-                        }
-                        eligible = AutofillEntryMatcher.matches(entries, current.recipient)
-                            .filter { current.recipient.kind != RecipientKind.NATIVE_APP || it.certificateBound }
-                            .map { it.entry.id }.toSet()
-                        result.success(eligible.toList())
+                    if (args["cleaned"] != true) {
+                        result.error("cleanup_required", "Close the private vault before finishing.", null)
+                        cancel()
+                        return@setMethodCallHandler
                     }
-                    "validate" -> result.success(true)
-                    "finish" -> {
-                        if (!current.save && args["id"].toString() !in eligible) {
-                            result.error("origin", "This login is not associated with this destination.", null)
+                    if (!current.save && args["id"].toString() !in eligible) {
+                        result.error("origin", "This login is not associated with this destination.", null)
+                        cancel()
+                        return@setMethodCallHandler
+                    }
+                    if (current.save) {
+                        released = true
+                        AutofillSessions.remove(current.token)
+                        result.success(null)
+                        cleanup.released()
+                    } else {
+                        val digest = args["vaultDigest"] as? String
+                        val currentDigest = runCatching {
+                            sha256Hex(VaultCommit.file(this, args["vaultPath"] as String).readBytes())
+                        }.getOrNull()
+                        if (digest == null || currentDigest != digest) {
+                            result.error("vault_changed", "The vault changed. Unlock it again.", null)
+                            cancel()
                             return@setMethodCallHandler
                         }
-                        if (current.save) {
-                            released = true
-                            AutofillSessions.remove(current.token)
-                            result.success(null)
-                            finish()
-                        } else {
-                            val username = args["username"] as? String ?: ""
-                            val password = args["password"] as? String
-                            if (current.parsed.passwordId != null && password == null) {
-                                result.error("password", "No password available", null)
-                                return@setMethodCallHandler
-                            }
-                            val presentation = RemoteViews(packageName, R.layout.keytitan_autofill_dataset).apply {
-                                setTextViewText(R.id.keytitan_autofill_label, "KeyTitan")
-                            }
-                            val dataset = android.service.autofill.Dataset.Builder(presentation)
-                            current.parsed.usernameId?.let { dataset.setValue(it, AutofillValue.forText(username)) }
-                            current.parsed.passwordId?.let { dataset.setValue(it, AutofillValue.forText(password!!)) }
-                            val reply = Intent().putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT, dataset.build())
-                            AutofillContinuation.clear()
-                            if (current.parsed.passwordId == null && !current.parsed.registration && password != null) {
-                                // Keep only the selected credential for this Android flow,
-                                // never the master password or unlocked vault key.
-                                runCatching {
-                                    AutofillContinuation.remember(this, current,
-                                        args["vaultPath"] as String, args["vaultDigest"] as String, username, password)
-                                }
-                            }
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
-                                reply.putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT_EPHEMERAL_DATASET, true)
-                            released = true
-                            AutofillSessions.remove(current.token)
-                            setResult(RESULT_OK, reply)
-                            result.success(null)
-                            finish()
+                        val username = args["username"] as? String ?: ""
+                        val password = args["password"] as? String
+                        if (current.parsed.passwordId != null && password == null) {
+                            result.error("password", "No password available", null)
+                            cancel()
+                            return@setMethodCallHandler
                         }
+                        val presentation = RemoteViews(packageName, R.layout.keytitan_autofill_dataset).apply {
+                            setTextViewText(R.id.keytitan_autofill_label, "KeyTitan")
+                        }
+                        val dataset = android.service.autofill.Dataset.Builder(presentation)
+                        current.parsed.usernameId?.let { dataset.setValue(it, AutofillValue.forText(username)) }
+                        current.parsed.passwordId?.let { dataset.setValue(it, AutofillValue.forText(password!!)) }
+                        val reply = Intent().putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT, dataset.build())
+                        AutofillContinuation.clear()
+                        if (current.parsed.passwordId == null && !current.parsed.registration && password != null) {
+                            // Keep only the selected credential for this Android flow,
+                            // never the master password or unlocked vault key.
+                            runCatching {
+                                AutofillContinuation.remember(this, current,
+                                    args["vaultPath"] as String, args["vaultDigest"] as String, username, password)
+                            }
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+                            reply.putExtra(AutofillManager.EXTRA_AUTHENTICATION_RESULT_EPHEMERAL_DATASET, true)
+                        released = true
+                        AutofillSessions.remove(current.token)
+                        setResult(RESULT_OK, reply)
+                        result.success(null)
+                        cleanup.released()
                     }
-                    else -> result.notImplemented()
                 }
+                else -> result.notImplemented()
             }
+        }
     }
     private fun cancel() {
-        session?.let { AutofillContinuation.remove(it.flow); AutofillSessions.remove(it.token) }
-        setResult(RESULT_CANCELED)
-        finish()
+        cleanup.cancel()
     }
     override fun onStop() {
         super.onStop()
@@ -153,5 +193,6 @@ class KeyTitanAutofillAuthActivity : FlutterActivity() {
         session?.let { AutofillSessions.remove(it.token) }
         session = null
         super.onDestroy()
+        cleanup.hostDestroyed()
     }
 }

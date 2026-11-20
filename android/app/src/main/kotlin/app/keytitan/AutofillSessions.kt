@@ -25,6 +25,7 @@ internal data class AutofillSession(
 internal object AutofillSessions {
     private val pending = LinkedHashMap<String, AutofillSession>()
     private val claimed = mutableSetOf<String>()
+    private val revocationListeners = mutableMapOf<String, () -> Unit>()
     private val expiryHandler = Handler(Looper.getMainLooper())
     @Synchronized fun create(
         parsed: ParsedAutofillContext, recipient: RecipientIdentity,
@@ -53,6 +54,11 @@ internal object AutofillSessions {
             it.username = ""; it.password = ""
         }
         claimed.remove(token)
+        revocationListeners.remove(token)?.let { callback -> expiryHandler.post { callback() } }
+    }
+    @Synchronized fun onRevoked(token: String, callback: () -> Unit) {
+        if (get(token) == null) expiryHandler.post { callback() }
+        else revocationListeners[token] = callback
     }
     @Synchronized fun clear() {
         pending.keys.toList().forEach(::remove)

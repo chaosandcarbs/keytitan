@@ -43,7 +43,7 @@ void main() {
       );
 
       expect(await destination.readAsBytes(), original);
-      expect(await dir.list().length, 1);
+      expect(await dir.list().map((entry) => entry.uri.pathSegments.last).toList(), ['vault.ktn']);
     } finally {
       await dir.delete(recursive: true);
     }
@@ -66,7 +66,7 @@ void main() {
       );
 
       expect(await destination.readAsBytes(), original);
-      expect(await dir.list().length, 1);
+      expect(await dir.list().map((entry) => entry.uri.pathSegments.last).toList(), ['vault.ktn']);
     } finally {
       await dir.delete(recursive: true);
     }
@@ -93,7 +93,8 @@ void main() {
       );
 
       expect(await destination.readAsBytes(), downloaded);
-      expect(await dir.list().length, 1);
+      expect(await dir.list().map((entry) => entry.uri.pathSegments.last).toList(),
+          unorderedEquals(['vault.ktn', '.vault.ktn.lock']));
     } finally {
       await dir.delete(recursive: true);
     }

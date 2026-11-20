@@ -33,6 +33,9 @@ class KeyTitanAutofillService : AutofillService() {
         val continuing = AutofillContinuation.available(this, priorFlow, parsed, recipient)
         val flow = if (continuing) priorFlow else UUID.randomUUID().toString()
         val session = AutofillSessions.create(parsed, recipient, flow = flow, continuation = continuing)
+        val cancellation = AutofillRequestCancellation(flow)
+        cancellation.track(session.token)
+        cancellationSignal.setOnCancelListener { cancellation.cancel() }
         val sender = authenticationIntent(session.token, continuing).intentSender
         val label = if (continuing) "Continue KeyTitan login" else if (parsed.registration) "Create login with KeyTitan" else "Unlock KeyTitan"
         val presentation = RemoteViews(packageName, R.layout.keytitan_autofill_dataset).apply {
@@ -57,10 +60,9 @@ class KeyTitanAutofillService : AutofillService() {
         parsed.passwordId?.let { dataset.setValue(it, null, presentation) }
         val response = FillResponse.Builder().addDataset(dataset.build())
         val clientState = Bundle().apply { putString("flow", flow) }
-        var saveToken: String? = null
         if (parsed.passwordId != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             val saveContext = AutofillSessions.create(parsed, recipient, save = true)
-            saveToken = saveContext.token
+            cancellation.track(saveContext.token)
             val info = SaveInfo.Builder(SaveInfo.SAVE_DATA_TYPE_PASSWORD, arrayOf(parsed.passwordId))
             parsed.usernameId?.let { info.setOptionalIds(arrayOf(it)) }
             response.setSaveInfo(info.build())
@@ -68,8 +70,7 @@ class KeyTitanAutofillService : AutofillService() {
         }
         response.setClientState(clientState)
         if (cancellationSignal.isCanceled) {
-            AutofillSessions.remove(session.token)
-            saveToken?.let(AutofillSessions::remove)
+            cancellation.cancel()
             return reject("cancelled")
         }
         AutofillPreferences.diagnostic(this, if (continuing) "continuation_offered" else "unlock_offered")
@@ -109,4 +110,20 @@ class KeyTitanAutofillService : AutofillService() {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0,
     )
     private companion object { val requestCodes = AtomicInteger(10000) }
+}
+
+/** Includes tokens created concurrently with a cancellation notification. */
+internal class AutofillRequestCancellation(private val flow: String) {
+    private var cancelled = false
+    private val tokens = mutableListOf<String>()
+    @Synchronized fun track(token: String) {
+        if (cancelled) AutofillSessions.remove(token) else tokens.add(token)
+    }
+    @Synchronized fun cancel() {
+        if (cancelled) return
+        cancelled = true
+        tokens.forEach(AutofillSessions::remove)
+        tokens.clear()
+        AutofillContinuation.remove(flow)
+    }
 }

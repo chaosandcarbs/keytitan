@@ -14,6 +14,7 @@ import android.view.autofill.AutofillId
 import android.view.autofill.AutofillValue
 import org.junit.Assert.*
 import org.junit.After
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.mockito.Mockito.*
@@ -30,6 +31,9 @@ import java.time.Duration
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
 class AutofillSecurityTest {
+    @Before fun grantOverlayHidingPermission() {
+        Shadows.shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(android.Manifest.permission.HIDE_OVERLAY_WINDOWS)
+    }
     private val context get() = RuntimeEnvironment.getApplication()
     private val cert = "A".repeat(64)
     private fun recipient(origin: String? = "https://example.com", kind: RecipientKind = RecipientKind.BROWSER) =
@@ -377,6 +381,48 @@ class AutofillSecurityTest {
         val next = AutofillSessions.create(parsed, recipient())
         AutofillSessions.clear()
         assertNull(AutofillSessions.claim(next.token))
+    }
+
+    @Test fun cancellationRevokesIssuedAndClaimedTokensAndNotifiesTheActivity() {
+        val tree = nativeRequest(node("password", true))
+        val controller = Robolectric.buildService(KeyTitanAutofillService::class.java).create()
+        try {
+            val fillContext = mock(FillContext::class.java)
+            `when`(fillContext.structure).thenReturn(tree)
+            val request = mock(FillRequest::class.java)
+            `when`(request.fillContexts).thenReturn(listOf(fillContext))
+            val cancellation = CancellationSignal()
+            val callback = mock(FillCallback::class.java)
+            controller.get().onFillRequest(request, cancellation, callback)
+            val response = ArgumentCaptor.forClass(FillResponse::class.java)
+            verify(callback).onSuccess(response.capture())
+            val state = ReflectionHelpers.callInstanceMethod<android.os.Bundle>(response.value, "getClientState")
+            val token = state.getString("save")!!
+            val session = AutofillSessions.claim(token)!!
+            var revoked = false
+            AutofillSessions.onRevoked(token) { revoked = true }
+            cancellation.cancel()
+            assertNull(AutofillSessions.get(token))
+            assertFalse(AutofillSessions.valid(context, session))
+            Shadows.shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(revoked)
+        } finally { controller.destroy() }
+    }
+
+    @Test fun cancellationRevokesTokensCreatedAfterCancellation() {
+        val parsed = AutofillRequestParser.parse(structure(node("password", true)))!!
+        val cancellation = AutofillRequestCancellation("synthetic-flow")
+        cancellation.cancel()
+        val session = AutofillSessions.create(parsed, recipient())
+        cancellation.track(session.token)
+        assertNull(AutofillSessions.claim(session.token))
+    }
+
+    @Test fun cancellationAlsoRevokesTheSelectedLoginContinuation() = withContinuation { first, next, _ ->
+        val cancellation = AutofillRequestCancellation(first.flow)
+        cancellation.track(first.token)
+        cancellation.cancel()
+        assertFalse(AutofillContinuation.available(context, first.flow, next, recipient()))
     }
 
     @Test fun commitsRejectStaleWritesExpiredRequestsAndOutsidePaths() {

@@ -2,27 +2,33 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
 import 'autofill.dart';
 import 'globals.dart';
 import 'passwords.dart';
 import 'settings.dart';
+import 'secure_clipboard.dart';
 
 class KeyTitanList extends StatefulWidget {
-  const KeyTitanList(
-      {super.key, required this.title, required this.navigatorKey});
+  const KeyTitanList({
+    super.key,
+    required this.title,
+    required this.navigatorKey,
+    this.window,
+  });
 
   final String title;
   final GlobalKey<NavigatorState> navigatorKey;
+
+  /// Desktop window that owns this view; defaults to the app's current window.
+  final Window? window;
 
   @override
   State<KeyTitanList> createState() => _KeyTitanListState();
 }
 
-class _KeyTitanListState extends State<KeyTitanList>
-    with WindowListener, WidgetsBindingObserver {
+class _KeyTitanListState extends State<KeyTitanList> with WidgetsBindingObserver {
   // Form controllers for the add/edit password dialog.
   final headCon = TextEditingController();
   final idCon = TextEditingController();
@@ -50,26 +56,40 @@ class _KeyTitanListState extends State<KeyTitanList>
   Timer? _backgroundLockTimer;
   DateTime? _backgroundedAt;
   bool _isAutoLocking = false;
+  bool _lockSaveFailed = false;
+  bool _isRecovering = false;
+  String? _recoveryError;
+  final _recoveryPassword = TextEditingController();
+  Window? _window;
+  ListenerId? _windowListenerId;
 
   List<TextEditingController> get _dialogControllers => [
-        headCon,
-        idCon,
-        titleCon,
-        siteCon,
-        uriCon,
-        catCon,
-        userCon,
-        passCon,
-        complexityCon,
-      ];
+    headCon,
+    idCon,
+    titleCon,
+    siteCon,
+    uriCon,
+    catCon,
+    userCon,
+    passCon,
+    complexityCon,
+  ];
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     // Only desktop platforms support the window-close interception.
-    if (!Constants.isMobile) {
-      windowManager.addListener(this);
+    if (Constants.isDesktop) {
+      _window = widget.window;
+      if (_window == null) {
+        try {
+          _window = WindowManager.instance.getCurrent();
+        } on ArgumentError {
+          // Widget tests may run without the native window library loaded.
+        }
+      }
+      _windowListenerId = _window?.addListener(_onWindowEvent);
     }
     _loadSettings();
   }
@@ -85,11 +105,12 @@ class _KeyTitanListState extends State<KeyTitanList>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _cancelBackgroundLock();
-    if (!Constants.isMobile) {
-      windowManager.removeListener(this);
+    final windowListenerId = _windowListenerId;
+    if (windowListenerId != null) {
+      _window?.removeListener(windowListenerId);
     }
     KeyTitanAutofillBridge.setPasswordResolver(null);
-    // Zero then dispose all text controllers so plaintext doesn't linger.
+    // Clear then dispose controllers to release plaintext references.
     _clearAllControllers();
     headCon.dispose();
     idCon.dispose();
@@ -100,6 +121,8 @@ class _KeyTitanListState extends State<KeyTitanList>
     userCon.dispose();
     passCon.dispose();
     complexityCon.dispose();
+    _recoveryPassword.clear();
+    _recoveryPassword.dispose();
     _refreshTrigger.dispose();
     // State.dispose cannot await; save/close paths await disposal before leaving.
     if (!_pFileDisposed) {
@@ -128,16 +151,21 @@ class _KeyTitanListState extends State<KeyTitanList>
     }
   }
 
-  @override
-  void onWindowBlur() {
-    unawaited(_savePendingChanges('window blur'));
-    _scheduleBackgroundLock();
-  }
-
-  @override
-  void onWindowMinimize() {
-    unawaited(_savePendingChanges('window minimize'));
-    _scheduleBackgroundLock();
+  Future<void> _onWindowEvent(WindowEvent event) async {
+    switch (event) {
+      case WindowCloseRequestedEvent(:final request):
+        await _onWindowClose(request);
+      case WindowBlurredEvent():
+        unawaited(_savePendingChanges('window blur'));
+        _scheduleBackgroundLock();
+      case WindowMinimizedEvent():
+        unawaited(_savePendingChanges('window minimize'));
+        _scheduleBackgroundLock();
+      case WindowFocusedEvent() || WindowRestoredEvent():
+        _lockIfBackgroundDelayElapsed();
+      default:
+        break;
+    }
   }
 
   Future<bool> _savePendingChanges(String reason) async {
@@ -148,16 +176,6 @@ class _KeyTitanListState extends State<KeyTitanList>
     final saved = await file.attemptEncrypt();
     if (!saved) debugPrint('Vault save failed during $reason.');
     return saved;
-  }
-
-  @override
-  void onWindowFocus() {
-    _lockIfBackgroundDelayElapsed();
-  }
-
-  @override
-  void onWindowRestore() {
-    _lockIfBackgroundDelayElapsed();
   }
 
   void _scheduleBackgroundLock() {
@@ -204,6 +222,7 @@ class _KeyTitanListState extends State<KeyTitanList>
     _isClosing = true;
     _cancelBackgroundLock();
     _hideSensitiveUiForLock();
+    pFile!.lockAccess();
     _clearAllControllers();
     KeyTitanAutofillBridge.setPasswordResolver(null);
 
@@ -214,11 +233,19 @@ class _KeyTitanListState extends State<KeyTitanList>
       debugPrint('Auto-lock save error: $e');
     }
     if (!saved) {
-      debugPrint('Auto-lock cancelled because the vault could not be saved.');
-      _isClosing = false;
+      try {
+        await pFile!.suspendForRecovery();
+      } catch (e) {
+        // Never reveal the session when either saving or sealing fails.
+        debugPrint('Could not seal pending changes: $e');
+      }
+      try {
+        await KeyTitanAutofillBridge.clearEntries();
+      } catch (e) {
+        debugPrint('Could not clear autofill metadata: $e');
+      }
       if (mounted) {
-        setState(() => _isAutoLocking = false);
-        unawaited(_syncAutofillCache());
+        setState(() => _lockSaveFailed = true);
       }
       return;
     }
@@ -232,23 +259,27 @@ class _KeyTitanListState extends State<KeyTitanList>
     }
 
     if (mounted) {
-      widget.navigatorKey.currentState
-          ?.pushNamedAndRemoveUntil(KeyTitan.home, (route) => false);
+      widget.navigatorKey.currentState?.pushNamedAndRemoveUntil(
+        KeyTitan.home,
+        (route) => false,
+      );
     }
   }
 
   void _hideSensitiveUiForLock() {
     final route = ModalRoute.of(context);
     if (mounted && route != null && !route.isCurrent) {
-      Navigator.of(context, rootNavigator: true).pop();
+      Navigator.of(
+        context,
+        rootNavigator: true,
+      ).popUntil((candidate) => candidate == route);
     }
     if (mounted) {
       setState(() => _isAutoLocking = true);
     }
   }
 
-  // Overwrites all sensitive dialog controllers with empty strings so
-  // plaintext does not linger in memory any longer than necessary.
+  // Clear plaintext references; managed strings cannot be reliably zeroed.
   void _clearAllControllers() {
     for (final controller in _dialogControllers) {
       controller.clear();
@@ -257,9 +288,12 @@ class _KeyTitanListState extends State<KeyTitanList>
 
   // Called when the user clicks the native window close button on desktop.
   // The close is prevented until the current vault is durably saved.
-  @override
-  void onWindowClose() async {
+  Future<void> _onWindowClose(EventRequest request) async {
+    // Native close requests wait for this listener's Future to complete.
+    // A failed save vetoes the request; a successful save allows it to finish.
+    if (_pFileDisposed) return;
     if (_isClosing) {
+      request.cancel();
       return;
     }
     _isClosing = true;
@@ -268,19 +302,21 @@ class _KeyTitanListState extends State<KeyTitanList>
     KeyTitanAutofillBridge.setPasswordResolver(null);
     final saved = await pFile?.attemptEncrypt() ?? true;
     if (!saved) {
+      request.cancel();
       _isClosing = false;
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-                'Window close cancelled because the vault could not be saved.'),
+              'Window close cancelled because the vault could not be saved.',
+            ),
             backgroundColor: Colors.redAccent,
           ),
         );
         unawaited(_syncAutofillCache());
       }
-      await windowManager.show();
-      await windowManager.focus();
+      _window?.show();
+      _window?.focus();
       return;
     }
     try {
@@ -290,7 +326,6 @@ class _KeyTitanListState extends State<KeyTitanList>
     } catch (e) {
       debugPrint('Window-close cleanup error: $e');
     }
-    await windowManager.destroy();
   }
 
   @override
@@ -312,6 +347,7 @@ class _KeyTitanListState extends State<KeyTitanList>
   }
 
   Future<void> _syncAutofillCache() async {
+    if (_isAutoLocking || _isClosing || _pFileDisposed) return;
     if (!Constants.isMobile) return;
 
     if (Platform.isAndroid) {
@@ -378,9 +414,13 @@ class _KeyTitanListState extends State<KeyTitanList>
     final ciphertext = row?['password']?.toString();
     if (ciphertext == null || ciphertext.isEmpty) return null;
 
-    final plaintext = await file.decryptPassword(ciphertext);
-    if (plaintext == keyTitanPass.decryptionError) return null;
-    return plaintext;
+    try {
+      return await file.decryptPassword(ciphertext);
+    } on PasswordDecryptionException {
+      return null;
+    } on VaultLockedException {
+      return null;
+    }
   }
 
   List<String> _autofillUris(String storedUris, String site) {
@@ -413,8 +453,9 @@ class _KeyTitanListState extends State<KeyTitanList>
   }
 
   Future<void> _updatePassword() async {
-    await pFile!
-        .savePassword(_passwordFromControllers(id: int.parse(idCon.text)));
+    await pFile!.savePassword(
+      _passwordFromControllers(id: int.parse(idCon.text)),
+    );
     final saved = await _savePendingChanges('credential update');
     // Zero the password field immediately after the encrypted copy is written.
     passCon.text = '';
@@ -493,8 +534,10 @@ class _KeyTitanListState extends State<KeyTitanList>
       debugPrint('Save cleanup error: $e');
     }
     if (mounted) {
-      widget.navigatorKey.currentState!
-          .pushNamedAndRemoveUntil(KeyTitan.home, (route) => false);
+      widget.navigatorKey.currentState!.pushNamedAndRemoveUntil(
+        KeyTitan.home,
+        (route) => false,
+      );
     }
   }
 
@@ -512,8 +555,10 @@ class _KeyTitanListState extends State<KeyTitanList>
       debugPrint('Close cleanup error: $e');
     }
     if (mounted) {
-      widget.navigatorKey.currentState!
-          .pushNamedAndRemoveUntil(KeyTitan.home, (route) => false);
+      widget.navigatorKey.currentState!.pushNamedAndRemoveUntil(
+        KeyTitan.home,
+        (route) => false,
+      );
     }
   }
 
@@ -568,6 +613,10 @@ class _KeyTitanListState extends State<KeyTitanList>
                       controller: currentCon,
                       autofocus: true,
                       obscureText: true,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      enableIMEPersonalizedLearning: false,
+                      autofillHints: null,
                       decoration: const InputDecoration(
                         labelText: 'Current vault password',
                       ),
@@ -579,6 +628,10 @@ class _KeyTitanListState extends State<KeyTitanList>
                     TextFormField(
                       controller: newCon,
                       obscureText: true,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      enableIMEPersonalizedLearning: false,
+                      autofillHints: null,
                       decoration: const InputDecoration(
                         labelText: 'New vault password',
                       ),
@@ -590,6 +643,10 @@ class _KeyTitanListState extends State<KeyTitanList>
                     TextFormField(
                       controller: verifyCon,
                       obscureText: true,
+                      autocorrect: false,
+                      enableSuggestions: false,
+                      enableIMEPersonalizedLearning: false,
+                      autofillHints: null,
                       decoration: const InputDecoration(
                         labelText: 'Confirm new password',
                       ),
@@ -612,8 +669,9 @@ class _KeyTitanListState extends State<KeyTitanList>
               ),
               actions: [
                 TextButton(
-                  onPressed:
-                      isSaving ? null : () => Navigator.pop(dialogContext),
+                  onPressed: isSaving
+                      ? null
+                      : () => Navigator.pop(dialogContext),
                   child: const Text('Cancel'),
                 ),
                 ElevatedButton.icon(
@@ -646,8 +704,9 @@ class _KeyTitanListState extends State<KeyTitanList>
                             navigator.pop();
                             messenger.showSnackBar(
                               const SnackBar(
-                                content:
-                                    Text('Vault password changed and saved.'),
+                                content: Text(
+                                  'Vault password changed and saved.',
+                                ),
                               ),
                             );
                           } else {
@@ -806,6 +865,10 @@ class _KeyTitanListState extends State<KeyTitanList>
                             controller: passCon,
                             obscureText:
                                 !(edit && _settings.showPlaintextOnEdit),
+                            autocorrect: false,
+                            enableSuggestions: false,
+                            enableIMEPersonalizedLearning: false,
+                            autofillHints: null,
                             decoration: const InputDecoration(
                               hintText: 'Enter or generate a password',
                               label: Text('Password'),
@@ -836,7 +899,8 @@ class _KeyTitanListState extends State<KeyTitanList>
                               label: 'Length: $passLength',
                               min: Constants.minPassLength.toDouble(),
                               max: Constants.maxPassLength.toDouble(),
-                              divisions: Constants.maxPassLength -
+                              divisions:
+                                  Constants.maxPassLength -
                                   Constants.minPassLength,
                               thumbColor: Colors.white,
                               activeColor: Constants.lightText,
@@ -893,10 +957,13 @@ class _KeyTitanListState extends State<KeyTitanList>
     List<DropdownMenuEntry<dynamic>> categoryOptions,
     double dialogWidth,
   ) {
-    final categoryWidth =
-        Constants.isMobile ? dialogWidth : (dialogWidth - 44) * 0.54;
-    final categoryDropdown =
-        _buildCategoryDropdown(categoryOptions, categoryWidth);
+    final categoryWidth = Constants.isMobile
+        ? dialogWidth
+        : (dialogWidth - 44) * 0.54;
+    final categoryDropdown = _buildCategoryDropdown(
+      categoryOptions,
+      categoryWidth,
+    );
     final newCategoryField = TextFormField(
       controller: catCon,
       decoration: const InputDecoration(
@@ -986,9 +1053,7 @@ class _KeyTitanListState extends State<KeyTitanList>
     }
 
     if (pFile == null) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
     // PopScope handles the back gesture / button on Android and iOS.
@@ -999,13 +1064,14 @@ class _KeyTitanListState extends State<KeyTitanList>
       },
       child: ValueListenableBuilder(
         valueListenable: _refreshTrigger,
-        builder: (context, _, __) {
+        builder: (context, _, _) {
           return FutureBuilder<List<Map<String, dynamic>>>(
             future: pFile!.getCategories(),
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return const Scaffold(
-                    body: Center(child: CircularProgressIndicator()));
+                  body: Center(child: CircularProgressIndicator()),
+                );
               }
 
               final categories = snapshot.data ?? [];
@@ -1040,7 +1106,9 @@ class _KeyTitanListState extends State<KeyTitanList>
                       unselectedLabelColor: Constants.lightText,
                       labelColor: Colors.white,
                       labelPadding: const EdgeInsets.symmetric(
-                          horizontal: 15.0, vertical: 7.0),
+                        horizontal: 15.0,
+                        vertical: 7.0,
+                      ),
                     ),
                   ),
                   bottomNavigationBar: _buildBottomNav(),
@@ -1054,11 +1122,15 @@ class _KeyTitanListState extends State<KeyTitanList>
                           final messenger = ScaffoldMessenger.of(context);
                           // Decrypt the password only at the moment the edit
                           // button is pressed, then populate the dialog.
-                          final decryptedPass = await pFile!.decryptPassword(
-                            data['password'] as String,
-                          );
-                          if (!mounted) return;
-                          if (decryptedPass == keyTitanPass.decryptionError) {
+                          final String decryptedPass;
+                          try {
+                            decryptedPass = await pFile!.decryptPassword(
+                              data['password'] as String,
+                            );
+                          } on VaultLockedException {
+                            return;
+                          } on PasswordDecryptionException {
+                            if (!mounted || _isAutoLocking) return;
                             messenger.showSnackBar(
                               const SnackBar(
                                 content: Text('Could not decrypt password'),
@@ -1067,11 +1139,13 @@ class _KeyTitanListState extends State<KeyTitanList>
                             );
                             return;
                           }
+                          if (!mounted || _isAutoLocking) return;
                           idCon.text = data['id'].toString();
                           titleCon.text = data['title'] as String;
                           siteCon.text = (data['site'] ?? '') as String;
-                          uriCon.text = keyTitanPass
-                              .displayUris((data['uris'] ?? '').toString());
+                          uriCon.text = keyTitanPass.displayUris(
+                            (data['uris'] ?? '').toString(),
+                          );
                           catCon.text = cat['category'] as String;
                           userCon.text = (data['username'] ?? '') as String;
                           passCon.text = decryptedPass;
@@ -1147,15 +1221,91 @@ class _KeyTitanListState extends State<KeyTitanList>
   }
 
   Widget _buildLockingState() {
-    return Scaffold(
-      appBar: genTitanAppBar('Locking Vault'),
-      backgroundColor: Constants.backColor,
-      body: Container(
-        width: double.infinity,
-        decoration: Constants.backgroundDecoration,
-        child: const Center(child: CircularProgressIndicator()),
+    return PopScope(
+      canPop: false,
+      child: Scaffold(
+        appBar: genTitanAppBar(
+          _lockSaveFailed ? 'Vault Locked' : 'Locking Vault',
+        ),
+        backgroundColor: Constants.backColor,
+        body: Container(
+          width: double.infinity,
+          decoration: Constants.backgroundDecoration,
+          child: !_lockSaveFailed
+              ? const Center(child: CircularProgressIndicator())
+              : Center(
+                  child: SingleChildScrollView(
+                    padding: const EdgeInsets.all(24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'Saving failed. Your pending changes are preserved for this session. Unlock to recover them and retry saving.',
+                        ),
+                        const SizedBox(height: 16),
+                        TextField(
+                          controller: _recoveryPassword,
+                          obscureText: true,
+                          autocorrect: false,
+                          enableSuggestions: false,
+                          enableIMEPersonalizedLearning: false,
+                          autofillHints: null,
+                          enabled: !_isRecovering,
+                          decoration: const InputDecoration(
+                            labelText: 'Vault password',
+                          ),
+                          onSubmitted: (_) {
+                            if (!_isRecovering) _recoverLockedSession();
+                          },
+                        ),
+                        if (_recoveryError != null)
+                          Text(
+                            _recoveryError!,
+                            style: const TextStyle(color: Colors.redAccent),
+                          ),
+                        const SizedBox(height: 16),
+                        if (_isRecovering)
+                          const CircularProgressIndicator()
+                        else
+                          FilledButton(
+                            onPressed: _recoverLockedSession,
+                            child: const Text('Unlock pending changes'),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+        ),
       ),
     );
+  }
+
+  Future<void> _recoverLockedSession() async {
+    final password = _recoveryPassword.text;
+    _recoveryPassword.clear();
+    setState(() {
+      _isRecovering = true;
+      _recoveryError = null;
+    });
+    var unlocked = false;
+    try {
+      unlocked = await pFile!.resumeAfterFailedSave(password);
+    } catch (_) {
+      // Keep the gate and preserved changes if recovery itself fails.
+    }
+    if (!mounted) return;
+    setState(() {
+      _isRecovering = false;
+      if (unlocked) {
+        _isAutoLocking = false;
+        _lockSaveFailed = false;
+        _isClosing = false;
+      } else {
+        _recoveryError =
+            'Could not unlock pending changes. Check your vault password.';
+      }
+    });
+    if (unlocked) _triggerRefresh();
   }
 }
 
@@ -1187,16 +1337,6 @@ class _CategoryListView extends StatelessWidget {
     if (uri.host.isEmpty || !uri.host.contains('.')) return;
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
-  }
-
-  Future<void> _clearClipboardLater(String copiedText) async {
-    await Future.delayed(
-      Duration(seconds: settings.clipboardClearDelaySeconds),
-    );
-    final current = await Clipboard.getData('text/plain');
-    if (current?.text == copiedText) {
-      await Clipboard.setData(const ClipboardData(text: ''));
     }
   }
 
@@ -1238,14 +1378,16 @@ class _CategoryListView extends StatelessWidget {
                                 Text(
                                   item['title'],
                                   style: const TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.bold),
+                                    fontSize: 18,
+                                    fontWeight: FontWeight.bold,
+                                  ),
                                 ),
                                 const SizedBox(height: 4),
                                 Text(
                                   item['username'] ?? '',
                                   style: const TextStyle(
-                                      color: Constants.lightText),
+                                    color: Constants.lightText,
+                                  ),
                                 ),
                               ],
                             ),
@@ -1283,8 +1425,9 @@ class _CategoryListView extends StatelessWidget {
         tooltip: 'Open Site',
         icon: Icon(Icons.link, color: hasSite ? Colors.blue : Colors.grey),
         iconSize: Constants.cardIconSize,
-        onPressed:
-            hasSite ? () => _launchInBrowser(item['site'].toString()) : null,
+        onPressed: hasSite
+            ? () => _launchInBrowser(item['site'].toString())
+            : null,
       ),
       IconButton(
         tooltip: 'Copy Password',
@@ -1294,10 +1437,13 @@ class _CategoryListView extends StatelessWidget {
           final messenger = ScaffoldMessenger.of(context);
           // Decrypt only at the moment the copy button is pressed.
           // The plaintext exists only for the duration of this callback.
-          final plaintext = await pFile.decryptPassword(
-            item['password'] as String,
-          );
-          if (plaintext == keyTitanPass.decryptionError) {
+          final String plaintext;
+          try {
+            plaintext = await pFile.decryptPassword(item['password'] as String);
+          } on VaultLockedException {
+            return;
+          } on PasswordDecryptionException {
+            if (!context.mounted || pFile.isAccessLocked) return;
             messenger.showSnackBar(
               const SnackBar(
                 content: Text('Could not decrypt password'),
@@ -1306,10 +1452,13 @@ class _CategoryListView extends StatelessWidget {
             );
             return;
           }
-          await Clipboard.setData(ClipboardData(text: plaintext));
-          if (settings.clearClipboardAfterCopy) {
-            unawaited(_clearClipboardLater(plaintext));
-          }
+          if (pFile.isAccessLocked || !context.mounted) return;
+          await SensitiveClipboard.copy(
+            plaintext,
+            clearAfter: settings.clearClipboardAfterCopy
+                ? Duration(seconds: settings.clipboardClearDelaySeconds)
+                : null,
+          );
           messenger.showSnackBar(
             const SnackBar(content: Text('Password copied to clipboard')),
           );
@@ -1330,8 +1479,9 @@ class _CategoryListView extends StatelessWidget {
     ];
 
     return Row(
-      mainAxisAlignment:
-          expanded ? MainAxisAlignment.spaceAround : MainAxisAlignment.end,
+      mainAxisAlignment: expanded
+          ? MainAxisAlignment.spaceAround
+          : MainAxisAlignment.end,
       mainAxisSize: expanded ? MainAxisSize.max : MainAxisSize.min,
       children: actions,
     );

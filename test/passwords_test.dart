@@ -35,9 +35,9 @@ void main() {
     final password = Uint8List.fromList(utf8.encode('test-master-password'));
 
     try {
-      expect(
-        await keyTitanPass.hdecrypt(password, 'iv:ciphertext'),
-        keyTitanPass.decryptionError,
+      await expectLater(
+        keyTitanPass.hdecrypt(password, 'iv:ciphertext'),
+        throwsA(isA<PasswordDecryptionException>()),
       );
     } finally {
       password.fillRange(0, password.length, 0);

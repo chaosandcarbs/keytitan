@@ -1,0 +1,6 @@
+# Copy to key.properties (ignored by Git). Use your own production signing key.
+# Relative storeFile paths are resolved from the android directory.
+storeFile=/absolute/path/to/keytitan-release.keystore
+storePassword=replace-with-keystore-password
+keyAlias=keytitan-release
+keyPassword=replace-with-key-password
